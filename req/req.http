@@ -4,7 +4,7 @@ Content-Type: application/json
 
 {
   "uid" : "tangthinker",
-  "password" : "333"
+  "password" : "444"
 }
 
 ###
@@ -15,4 +15,31 @@ Content-Type: application/json
 {
   "uid" : "tangthinker",
   "password" : "333"
+}
+
+###
+
+POST http://{{url}}/api/v1/modify-password
+Content-Type: application/json
+
+{
+  "uid" : "tangthinker",
+    "old_password" : "333",
+    "new_password" : "444"
+}
+
+###
+POST http://{{url}}/api/v1/uid-unique
+Content-Type: application/json
+
+{
+  "uid" : "tangthinker"
+}
+
+###
+POST http://{{url}}/api/v1/token-valid
+Content-Type: application/json
+
+{
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzMxMjIzNDcsImp0aSI6InRhbmd0aGlua2VyIiwiaWF0IjoxNzMzMTIyMjg3fQ.7pPbW1KB7KgoBsbX43cclLx1e04c4RoLlPNpOfVj5fc"
 }

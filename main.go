@@ -18,6 +18,7 @@ func main() {
 
 	authApi := manager.NewApi()
 
+	rootRouter.Post("/uid-unique", authApi.UidUnique)
 	rootRouter.Post("/login", authApi.Login)
 	rootRouter.Post("/register", authApi.Register)
 	rootRouter.Post("/modify-password", authApi.ModifyPassword)
