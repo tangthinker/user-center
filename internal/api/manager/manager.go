@@ -1,7 +1,6 @@
 package manager
 
 import (
-	"fmt"
 	"github.com/gofiber/fiber/v2"
 	"github.com/tangthinker/user-center/internal/data"
 	"github.com/tangthinker/user-center/internal/service/auth"
@@ -33,12 +32,18 @@ func (a *Api) Login(ctx *fiber.Ctx) error {
 	token, err := a.managerService.Login(req.Uid, req.Password)
 	if err != nil {
 		ctx.Status(fiber.StatusInternalServerError)
-		return fmt.Errorf("login failed")
+		return ctx.JSON(fiber.Map{
+			"code": 1,
+			"msg":  "login failed: " + err.Error(),
+		})
 	}
 
 	if token == "" {
 		ctx.Status(fiber.StatusUnauthorized)
-		return fmt.Errorf("login failed")
+		return ctx.JSON(fiber.Map{
+			"code": 1,
+			"msg":  "login failed: invalid uid or password",
+		})
 	}
 
 	return ctx.JSON(fiber.Map{
@@ -63,7 +68,10 @@ func (a *Api) Register(ctx *fiber.Ctx) error {
 
 	if err := a.managerService.Register(req.Uid, req.Password); err != nil {
 		ctx.Status(fiber.StatusInternalServerError)
-		return fmt.Errorf("register failed")
+		return ctx.JSON(fiber.Map{
+			"code": 1,
+			"msg":  "register failed: " + err.Error(),
+		})
 	}
 
 	return ctx.JSON(fiber.Map{
@@ -84,7 +92,10 @@ func (a *Api) ModifyPassword(ctx *fiber.Ctx) error {
 
 	if err := a.managerService.ModifyPassword(req.Uid, req.OldPassword, req.NewPassword); err != nil {
 		ctx.Status(fiber.StatusInternalServerError)
-		return fmt.Errorf("modify password failed")
+		return ctx.JSON(fiber.Map{
+			"code": 1,
+			"msg":  "modify password failed: " + err.Error(),
+		})
 	}
 
 	return ctx.JSON(fiber.Map{
@@ -135,7 +146,10 @@ func (a *Api) Verify(ctx *fiber.Ctx) error {
 	uid, err := a.authService.Verify(req.Token)
 	if err != nil {
 		ctx.Status(fiber.StatusUnauthorized)
-		return fmt.Errorf("verify failed")
+		return ctx.JSON(fiber.Map{
+			"code": 1,
+			"msg":  "verify failed: " + err.Error(),
+		})
 	}
 
 	return ctx.JSON(fiber.Map{

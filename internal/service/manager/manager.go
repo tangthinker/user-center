@@ -1,6 +1,7 @@
 package manager
 
 import (
+	"fmt"
 	"github.com/tangthinker/user-center/internal/helper/pwdencry"
 	"github.com/tangthinker/user-center/internal/model"
 	"github.com/tangthinker/user-center/internal/schema"
@@ -31,20 +32,20 @@ func NewCommonManager() Manager {
 func (m *CommonManager) Login(uid string, password string) (string, error) {
 	user, err := m.userModel.GetByUid(uid)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("get user by uid error: %w", err)
 	}
 
 	if user == nil {
-		return "", nil
+		return "", fmt.Errorf("uid not found")
 	}
 
 	encryptedPwd, err := m.pwdEncryptor.Encrypt(password)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("encrypt password error: %w", err)
 	}
 
 	if user.Password != encryptedPwd {
-		return "", nil
+		return "", fmt.Errorf("password not match")
 	}
 
 	return m.auth.Sign(uid)
@@ -53,42 +54,52 @@ func (m *CommonManager) Login(uid string, password string) (string, error) {
 func (m *CommonManager) Register(uid string, password string) error {
 	password, err := m.pwdEncryptor.Encrypt(password)
 	if err != nil {
-		return err
+		return fmt.Errorf("encrypt password error: %w", err)
 	}
 	user := &schema.User{
 		Uid:      uid,
 		Password: password,
 	}
 
-	return m.userModel.Create(user)
+	err = m.userModel.Create(user)
+	if err != nil {
+		return fmt.Errorf("create user error: %w", err)
+	}
+
+	return nil
 }
 
 func (m *CommonManager) ModifyPassword(uid string, oldPassword string, newPassword string) error {
 	user, err := m.userModel.GetByUid(uid)
 	if err != nil {
-		return err
+		return fmt.Errorf("get user by uid error: %w", err)
 	}
 
 	if user == nil {
-		return nil
+		return fmt.Errorf("uid not found")
 	}
 
 	encryptedPwd, err := m.pwdEncryptor.Encrypt(oldPassword)
 	if err != nil {
-		return err
+		return fmt.Errorf("encrypt password error: %w", err)
 	}
 
 	if user.Password != encryptedPwd {
-		return nil
+		return fmt.Errorf("password not match")
 	}
 
 	newPassword, err = m.pwdEncryptor.Encrypt(newPassword)
 	if err != nil {
-		return err
+		return fmt.Errorf("encrypt password error: %w", err)
 	}
 
 	user.Password = newPassword
-	return m.userModel.Update(user)
+	err = m.userModel.Update(user)
+	if err != nil {
+		return fmt.Errorf("update user error: %w", err)
+	}
+
+	return nil
 }
 
 func (m *CommonManager) UidUnique(uid string) bool {

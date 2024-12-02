@@ -41,5 +41,5 @@ POST http://{{url}}/api/v1/token-valid
 Content-Type: application/json
 
 {
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzMxMjIzNDcsImp0aSI6InRhbmd0aGlua2VyIiwiaWF0IjoxNzMzMTIyMjg3fQ.7pPbW1KB7KgoBsbX43cclLx1e04c4RoLlPNpOfVj5fc"
+  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzMxMjgxMDcsImp0aSI6InRhbmd0aGlua2VyIiwiaWF0IjoxNzMzMTI4MDQ3fQ.WlgqhlxYcy7yBxzoiGB4O5oPYrDJVWRQsufAHjAvwSI"
 }
