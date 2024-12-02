@@ -31,7 +31,6 @@ func (a *Api) Login(ctx *fiber.Ctx) error {
 
 	token, err := a.managerService.Login(req.Uid, req.Password)
 	if err != nil {
-		ctx.Status(fiber.StatusInternalServerError)
 		return ctx.JSON(fiber.Map{
 			"code": 1,
 			"msg":  "login failed: " + err.Error(),
@@ -67,7 +66,6 @@ func (a *Api) Register(ctx *fiber.Ctx) error {
 	}
 
 	if err := a.managerService.Register(req.Uid, req.Password); err != nil {
-		ctx.Status(fiber.StatusInternalServerError)
 		return ctx.JSON(fiber.Map{
 			"code": 1,
 			"msg":  "register failed: " + err.Error(),
@@ -91,7 +89,6 @@ func (a *Api) ModifyPassword(ctx *fiber.Ctx) error {
 	}
 
 	if err := a.managerService.ModifyPassword(req.Uid, req.OldPassword, req.NewPassword); err != nil {
-		ctx.Status(fiber.StatusInternalServerError)
 		return ctx.JSON(fiber.Map{
 			"code": 1,
 			"msg":  "modify password failed: " + err.Error(),
