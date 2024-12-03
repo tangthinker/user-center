@@ -31,7 +31,7 @@ func (g *CommonGenerator) Generate() string {
 
 	info := fmt.Sprintf("%x", hash.Sum(nil))
 
-	for i := 0; i < 5; i++ {
+	for i := 0; i < 10; i++ {
 		idx := rand.Intn(len(info))
 		if info[idx] >= 'a' && info[idx] <= 'z' {
 			info = info[:idx] + string(info[idx]-32) + info[idx+1:]
