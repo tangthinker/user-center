@@ -11,6 +11,7 @@ Content-Type: application/json
 
 POST http://{{url}}/api/v1/register
 Content-Type: application/json
+X-tangthinker-secret: loveVG
 
 {
   "uid" : "tangthinker",

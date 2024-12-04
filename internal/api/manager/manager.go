@@ -60,6 +60,21 @@ func (a *Api) Register(ctx *fiber.Ctx) error {
 		req data.RegisterReq
 	)
 
+	headers := ctx.GetReqHeaders()
+	if len(headers) == 0 {
+		ctx.Status(fiber.StatusForbidden)
+		return nil
+	}
+	secret := headers["X-Tangthinker-Secret"]
+	if len(secret) == 0 {
+		ctx.Status(fiber.StatusForbidden)
+		return nil
+	}
+	if secret[0] != "loveVG" {
+		ctx.Status(fiber.StatusForbidden)
+		return nil
+	}
+
 	if ctx.BodyParser(&req) != nil {
 		ctx.Status(fiber.StatusBadRequest)
 		return nil
