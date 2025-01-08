@@ -3,6 +3,6 @@ package constrant
 import "time"
 
 const (
-	DefaultTokenTTL = 24 * time.Hour
+	DefaultTokenTTL = 15 * 24 * time.Hour
 	TokenSecret     = "Tangthinker"
 )
