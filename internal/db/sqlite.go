@@ -18,7 +18,7 @@ func GetDB() *gorm.DB {
 		if rootPath != "" {
 			path = rootPath + "/" + path
 		}
-		DB, err := gorm.Open(sqlite.Open("user-center.db"), &gorm.Config{})
+		DB, err := gorm.Open(sqlite.Open(path), &gorm.Config{})
 
 		if err != nil {
 			panic(err)
