@@ -30,6 +30,10 @@ type UidUniqueReq struct {
 	Uid string `json:"uid"`
 }
 
+type UidUniqueResp struct {
+	Unique bool `json:"unique"`
+}
+
 type VerifyReq struct {
 	Token string `json:"token"`
 }
