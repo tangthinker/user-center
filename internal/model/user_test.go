@@ -1,9 +1,11 @@
 package model
 
 import (
-	"github.com/tangthinker/user-center/internal/schema"
+	"context"
 	"os"
 	"testing"
+
+	"github.com/tangthinker/user-center/internal/schema"
 )
 
 func TestUserModel(t *testing.T) {
@@ -19,12 +21,12 @@ func TestUserModel(t *testing.T) {
 		Password: "333",
 	}
 
-	if err := userModel.Create(user); err != nil {
+	if err := userModel.Create(context.Background(), user); err != nil {
 		t.Error(err)
 		return
 	}
 
-	userInDB, err := userModel.GetByUid(user.Uid)
+	userInDB, err := userModel.GetByUid(context.Background(), user.Uid)
 	if err != nil {
 		t.Error(err)
 		return

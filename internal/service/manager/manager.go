@@ -1,7 +1,10 @@
 package manager
 
 import (
+	"context"
 	"fmt"
+
+	"github.com/tangthinker/user-center/internal/data"
 	"github.com/tangthinker/user-center/internal/helper/pwdencry"
 	"github.com/tangthinker/user-center/internal/model"
 	"github.com/tangthinker/user-center/internal/schema"
@@ -9,10 +12,10 @@ import (
 )
 
 type Manager interface {
-	Login(uid string, password string) (string, error)
-	Register(uid string, password string) error
-	ModifyPassword(uid string, oldPassword string, newPassword string) error
-	UidUnique(uid string) bool
+	Login(ctx context.Context, params *data.LoginReq) (*data.LoginResp, error)
+	Register(ctx context.Context, params *data.RegisterReq) (*data.RegisterResp, error)
+	ModifyPassword(ctx context.Context, params *data.ModifyPasswordReq) (*data.ModifyPasswordResp, error)
+	UidUnique(ctx context.Context, params *data.UidUniqueReq) (*data.UidUniqueResp, error)
 }
 
 type CommonManager struct {
@@ -29,83 +32,110 @@ func NewCommonManager() Manager {
 	}
 }
 
-func (m *CommonManager) Login(uid string, password string) (string, error) {
-	user, err := m.userModel.GetByUid(uid)
+func (m *CommonManager) Login(ctx context.Context, params *data.LoginReq) (*data.LoginResp, error) {
+	user, err := m.userModel.GetByUid(ctx, params.Uid)
 	if err != nil {
-		return "", fmt.Errorf("get user by uid error: %w", err)
+		return nil, fmt.Errorf("get user by uid error: %w", err)
 	}
 
 	if user == nil {
-		return "", fmt.Errorf("uid not found")
+		return nil, fmt.Errorf("uid not found")
 	}
 
-	encryptedPwd, err := m.pwdEncryptor.Encrypt(password)
+	encryptedPwd, err := m.pwdEncryptor.Encrypt(params.Password)
 	if err != nil {
-		return "", fmt.Errorf("encrypt password error: %w", err)
+		return nil, fmt.Errorf("encrypt password error: %w", err)
 	}
 
 	if user.Password != encryptedPwd {
-		return "", fmt.Errorf("password not match")
+		return nil, fmt.Errorf("password not match")
 	}
 
-	return m.auth.Sign(uid)
+	token, err := m.auth.Sign(params.Uid)
+	if err != nil {
+		return nil, fmt.Errorf("sign token error: %w", err)
+	}
+
+	return &data.LoginResp{
+		Token: token,
+	}, nil
 }
 
-func (m *CommonManager) Register(uid string, password string) error {
-	password, err := m.pwdEncryptor.Encrypt(password)
+func (m *CommonManager) Register(ctx context.Context, params *data.RegisterReq) (*data.RegisterResp, error) {
+	password, err := m.pwdEncryptor.Encrypt(params.Password)
 	if err != nil {
-		return fmt.Errorf("encrypt password error: %w", err)
+		return nil, fmt.Errorf("encrypt password error: %w", err)
 	}
 	user := &schema.User{
-		Uid:      uid,
+		Uid:      params.Uid,
 		Password: password,
 	}
 
-	err = m.userModel.Create(user)
+	err = m.userModel.Create(ctx, user)
 	if err != nil {
-		return fmt.Errorf("create user error: %w", err)
+		return nil, fmt.Errorf("create user error: %w", err)
 	}
 
-	return nil
+	return &data.RegisterResp{}, nil
 }
 
-func (m *CommonManager) ModifyPassword(uid string, oldPassword string, newPassword string) error {
-	user, err := m.userModel.GetByUid(uid)
+func (m *CommonManager) ModifyPassword(ctx context.Context, params *data.ModifyPasswordReq) (*data.ModifyPasswordResp, error) {
+	tx := m.userModel.DB.WithContext(ctx).Begin()
+
+	txModel := model.UserModel{
+		DB: tx,
+	}
+	needRollback := true
+
+	defer func() {
+		if needRollback {
+			tx.Rollback()
+		}
+	}()
+
+	user, err := txModel.GetByUid(ctx, params.Uid)
 	if err != nil {
-		return fmt.Errorf("get user by uid error: %w", err)
+		return nil, fmt.Errorf("get user by uid error: %w", err)
 	}
 
 	if user == nil {
-		return fmt.Errorf("uid not found")
+		return nil, fmt.Errorf("uid not found")
 	}
 
-	encryptedPwd, err := m.pwdEncryptor.Encrypt(oldPassword)
+	encryptedPwd, err := m.pwdEncryptor.Encrypt(params.OldPassword)
 	if err != nil {
-		return fmt.Errorf("encrypt password error: %w", err)
+		return nil, fmt.Errorf("encrypt password error: %w", err)
 	}
 
 	if user.Password != encryptedPwd {
-		return fmt.Errorf("password not match")
+		return nil, fmt.Errorf("password not match")
 	}
 
-	newPassword, err = m.pwdEncryptor.Encrypt(newPassword)
+	newPassword, err := m.pwdEncryptor.Encrypt(params.NewPassword)
 	if err != nil {
-		return fmt.Errorf("encrypt password error: %w", err)
+		return nil, fmt.Errorf("encrypt password error: %w", err)
 	}
 
 	user.Password = newPassword
-	err = m.userModel.Update(user)
+	err = txModel.Update(ctx, user)
 	if err != nil {
-		return fmt.Errorf("update user error: %w", err)
+		return nil, fmt.Errorf("update user error: %w", err)
 	}
 
-	return nil
+	if err := tx.Commit().Error; err != nil {
+		return nil, fmt.Errorf("commit transaction error: %w", err)
+	}
+	needRollback = false
+
+	return &data.ModifyPasswordResp{}, nil
 }
 
-func (m *CommonManager) UidUnique(uid string) bool {
-	user, err := m.userModel.GetByUid(uid)
+func (m *CommonManager) UidUnique(ctx context.Context, params *data.UidUniqueReq) (*data.UidUniqueResp, error) {
+	user, err := m.userModel.GetByUid(ctx, params.Uid)
 	if err != nil {
-		return false
+		return nil, fmt.Errorf("get user by uid error: %w", err)
 	}
-	return user == nil
+	return &data.UidUniqueResp{
+		Unique: user == nil,
+	}, nil
 }

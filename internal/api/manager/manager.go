@@ -1,6 +1,8 @@
 package manager
 
 import (
+	"context"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/tangthinker/user-center/internal/data"
 	"github.com/tangthinker/user-center/internal/helper/response"
@@ -30,19 +32,17 @@ func (a *Api) Login(ctx *fiber.Ctx) error {
 		return nil
 	}
 
-	token, err := a.managerService.Login(req.Uid, req.Password)
+	loginResp, err := a.managerService.Login(context.Background(), &req)
 	if err != nil {
 		return response.Error(ctx, fiber.StatusUnauthorized, "login failed: "+err.Error())
 	}
 
-	if token == "" {
+	if loginResp.Token == "" {
 		ctx.Status(fiber.StatusUnauthorized)
 		return response.Error(ctx, fiber.StatusUnauthorized, "login failed: invalid uid or password")
 	}
 
-	return response.Success(ctx, fiber.Map{
-		"token": token,
-	})
+	return response.Success(ctx, loginResp)
 
 }
 
@@ -71,11 +71,11 @@ func (a *Api) Register(ctx *fiber.Ctx) error {
 		return nil
 	}
 
-	if err := a.managerService.Register(req.Uid, req.Password); err != nil {
+	registerResp, err := a.managerService.Register(context.Background(), &req)
+	if err != nil {
 		return response.Error(ctx, fiber.StatusInternalServerError, "register failed: "+err.Error())
 	}
-
-	return response.Success(ctx, nil)
+	return response.Success(ctx, registerResp)
 }
 
 func (a *Api) ModifyPassword(ctx *fiber.Ctx) error {
@@ -103,11 +103,12 @@ func (a *Api) ModifyPassword(ctx *fiber.Ctx) error {
 		return nil
 	}
 
-	if err := a.managerService.ModifyPassword(req.Uid, req.OldPassword, req.NewPassword); err != nil {
+	modifyPasswordResp, err := a.managerService.ModifyPassword(context.Background(), &req)
+	if err != nil {
 		return response.Error(ctx, fiber.StatusInternalServerError, "modify password failed: "+err.Error())
 	}
 
-	return response.Success(ctx, nil)
+	return response.Success(ctx, modifyPasswordResp)
 }
 
 func (a *Api) UidUnique(ctx *fiber.Ctx) error {
@@ -120,15 +121,12 @@ func (a *Api) UidUnique(ctx *fiber.Ctx) error {
 		return nil
 	}
 
-	if a.managerService.UidUnique(req.Uid) {
-		return response.Success(ctx, fiber.Map{
-			"unique": true,
-		})
+	uidUniqueResp, err := a.managerService.UidUnique(context.Background(), &req)
+	if err != nil {
+		return response.Error(ctx, fiber.StatusInternalServerError, "uid unique failed: "+err.Error())
 	}
 
-	return response.Success(ctx, fiber.Map{
-		"unique": false,
-	})
+	return response.Success(ctx, uidUniqueResp)
 }
 
 func (a *Api) Verify(ctx *fiber.Ctx) error {

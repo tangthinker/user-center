@@ -1,8 +1,10 @@
 package model
 
 import (
+	"context"
 	"errors"
 	"fmt"
+
 	"github.com/tangthinker/user-center/internal/db"
 	"github.com/tangthinker/user-center/internal/schema"
 	"gorm.io/gorm"
@@ -24,21 +26,21 @@ func NewUserModel() *UserModel {
 	}
 }
 
-func (u *UserModel) Create(user *schema.User) error {
-	return u.DB.Create(user).Error
+func (u *UserModel) Create(ctx context.Context, user *schema.User) error {
+	return u.DB.WithContext(ctx).Create(user).Error
 }
 
-func (u *UserModel) Update(user *schema.User) error {
-	return u.DB.Save(user).Error
+func (u *UserModel) Update(ctx context.Context, user *schema.User) error {
+	return u.DB.WithContext(ctx).Save(user).Error
 }
 
-func (u *UserModel) Delete(user *schema.User) error {
-	return u.DB.Delete(user).Error
+func (u *UserModel) Delete(ctx context.Context, user *schema.User) error {
+	return u.DB.WithContext(ctx).Delete(user).Error
 }
 
-func (u *UserModel) GetByID(ID int64) (*schema.User, error) {
+func (u *UserModel) GetByID(ctx context.Context, ID int64) (*schema.User, error) {
 	user := &schema.User{}
-	if err := u.DB.First(user, ID).Error; err != nil {
+	if err := u.DB.WithContext(ctx).First(user, ID).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
@@ -47,9 +49,9 @@ func (u *UserModel) GetByID(ID int64) (*schema.User, error) {
 	return user, nil
 }
 
-func (u *UserModel) GetByUid(uid string) (*schema.User, error) {
+func (u *UserModel) GetByUid(ctx context.Context, uid string) (*schema.User, error) {
 	user := &schema.User{}
-	if err := u.DB.Where("uid = ?", uid).First(user).Error; err != nil {
+	if err := u.DB.WithContext(ctx).Where("uid = ?", uid).First(user).Error; err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
