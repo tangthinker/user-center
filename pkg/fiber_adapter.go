@@ -23,6 +23,6 @@ func RegisterUserCenter(router fiber.Router, userDBRootPth string) {
 }
 
 func TokenValid(token string) (string, error) {
-	author := auth.NewCommonAuth()
+	author := auth.NewMemoryAuth()
 	return author.Verify(token)
 }

@@ -27,7 +27,7 @@ type CommonManager struct {
 func NewCommonManager() Manager {
 	return &CommonManager{
 		userModel:    model.NewUserModel(),
-		auth:         auth.NewCommonAuth(),
+		auth:         auth.NewMemoryAuth(),
 		pwdEncryptor: pwdencry.NewCommonEncryptor(),
 	}
 }
