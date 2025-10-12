@@ -36,14 +36,15 @@ func NewMemoryAuth() Auth {
 func (m *MemoryAuth) Sign(uid string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	expireAt := time.Now().Add(constrant.DefaultTokenTTL)
+	now := time.Now()
+	expireAt := now.Add(constrant.DefaultTokenTTL)
 	tokenInfo := &TokenInfo{
 		Uid:      uid,
-		SignedAt: time.Now(),
+		SignedAt: now,
 		ExpireAt: expireAt,
 	}
 
-	token := genToken(uid, constrant.TokenSecret)
+	token := genToken(uid, constrant.TokenSecret, now)
 	m.tokenMap[token] = tokenInfo
 	return token, nil
 }
@@ -67,11 +68,12 @@ func (m *MemoryAuth) Verify(token string) (string, error) {
 	return info.Uid, nil
 }
 
-func genToken(uid string, secret string) string {
+func genToken(uid string, secret string, signTime time.Time) string {
 	hash := md5.New()
 
 	hash.Write([]byte(uid))
 	hash.Write([]byte(secret))
+	hash.Write([]byte(fmt.Sprintf("%d", signTime.UnixMilli())))
 
 	token := fmt.Sprintf("%x", hash.Sum(nil))
 
