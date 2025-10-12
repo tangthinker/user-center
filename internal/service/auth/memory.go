@@ -63,6 +63,9 @@ func (m *MemoryAuth) Verify(token string) (string, error) {
 	info.ExpireAt = time.Now().Add(constrant.DefaultTokenTTL)
 	m.mu.Lock()
 	m.tokenMap[token] = info
+	for t, i := range m.tokenMap {
+		fmt.Println(t, i.Uid, i.SignedAt.Format(time.DateTime), i.ExpireAt.Format(time.DateTime))
+	}
 	m.mu.Unlock()
 
 	return info.Uid, nil
