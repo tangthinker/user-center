@@ -18,7 +18,7 @@ type Api struct {
 func NewApi() *Api {
 	return &Api{
 		managerService: manager.NewCommonManager(),
-		authService:    auth.NewJWTAuth(),
+		authService:    auth.NewMemoryAuth(),
 	}
 }
 
