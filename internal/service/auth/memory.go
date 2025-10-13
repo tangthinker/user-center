@@ -19,40 +19,35 @@ type TokenInfo struct {
 }
 
 type MemoryAuth struct {
-	tokenMap map[string]*TokenInfo
-	mu       *sync.Mutex
+	tokenMap sync.Map
 }
 
-var memoryAuth *MemoryAuth = &MemoryAuth{
-	tokenMap: make(map[string]*TokenInfo),
-	mu:       new(sync.Mutex),
-}
+var memoryAuth *MemoryAuth = &MemoryAuth{}
 
 func NewMemoryAuth() Auth {
 	return memoryAuth
 }
 
 func (m *MemoryAuth) Sign(uid string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
 	now := time.Now()
 	expireAt := now.Add(constrant.DefaultTokenTTL)
-	tokenInfo := &TokenInfo{
+	tokenInfo := TokenInfo{
 		Uid:      uid,
 		SignedAt: now,
 		ExpireAt: expireAt,
 	}
 
 	token := genToken(uid, constrant.TokenSecret, now)
-	m.tokenMap[token] = tokenInfo
-	fmt.Println(token, uid, expireAt.Format(time.DateTime))
+	m.tokenMap.Store(token, tokenInfo)
 	return token, nil
 }
 
 func (m *MemoryAuth) Verify(token string) (string, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	info, ok := m.tokenMap[token]
+	value, ok := m.tokenMap.Load(token)
+	if !ok {
+		return "", fmt.Errorf("memoery auth: token is invalid: %s", token)
+	}
+	info, ok := value.(TokenInfo)
 	if !ok {
 		return "", fmt.Errorf("memoery auth: token is invalid: %s", token)
 	}
@@ -61,10 +56,7 @@ func (m *MemoryAuth) Verify(token string) (string, error) {
 	}
 
 	info.ExpireAt = time.Now().Add(constrant.DefaultTokenTTL)
-	m.tokenMap[token] = info
-	for t, i := range m.tokenMap {
-		fmt.Println(t, i.Uid, i.SignedAt.Format(time.DateTime), i.ExpireAt.Format(time.DateTime))
-	}
+	m.tokenMap.Store(token, info)
 
 	return info.Uid, nil
 }
