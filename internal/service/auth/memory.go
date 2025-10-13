@@ -21,16 +21,12 @@ type MemoryAuth struct {
 	mu       *sync.Mutex
 }
 
-var memoryAuth *MemoryAuth
-var once sync.Once
+var memoryAuth *MemoryAuth = &MemoryAuth{
+	tokenMap: make(map[string]*TokenInfo),
+	mu:       new(sync.Mutex),
+}
 
 func NewMemoryAuth() Auth {
-	once.Do(func() {
-		memoryAuth = &MemoryAuth{
-			tokenMap: make(map[string]*TokenInfo),
-			mu:       new(sync.Mutex),
-		}
-	})
 	return memoryAuth
 }
 
