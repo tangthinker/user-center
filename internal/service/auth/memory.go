@@ -3,10 +3,11 @@ package auth
 import (
 	"crypto/md5"
 	"fmt"
-	"github.com/tangthinker/user-center/internal/constrant"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/tangthinker/user-center/internal/constrant"
 )
 
 type TokenInfo struct {
@@ -46,6 +47,7 @@ func (m *MemoryAuth) Sign(uid string) (string, error) {
 
 	token := genToken(uid, constrant.TokenSecret, now)
 	m.tokenMap[token] = tokenInfo
+	fmt.Println(token, uid, expireAt.Format(time.DateTime))
 	return token, nil
 }
 
