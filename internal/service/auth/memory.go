@@ -18,7 +18,7 @@ type TokenInfo struct {
 
 type MemoryAuth struct {
 	tokenMap map[string]*TokenInfo
-	mu       *sync.RWMutex
+	mu       *sync.Mutex
 }
 
 var memoryAuth *MemoryAuth
@@ -28,7 +28,7 @@ func NewMemoryAuth() Auth {
 	once.Do(func() {
 		memoryAuth = &MemoryAuth{
 			tokenMap: make(map[string]*TokenInfo),
-			mu:       new(sync.RWMutex),
+			mu:       new(sync.Mutex),
 		}
 	})
 	return memoryAuth
@@ -52,9 +52,9 @@ func (m *MemoryAuth) Sign(uid string) (string, error) {
 }
 
 func (m *MemoryAuth) Verify(token string) (string, error) {
-	m.mu.RLock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	info, ok := m.tokenMap[token]
-	m.mu.RUnlock()
 	if !ok {
 		return "", fmt.Errorf("memoery auth: token is invalid: %s", token)
 	}
@@ -63,12 +63,10 @@ func (m *MemoryAuth) Verify(token string) (string, error) {
 	}
 
 	info.ExpireAt = time.Now().Add(constrant.DefaultTokenTTL)
-	m.mu.Lock()
 	m.tokenMap[token] = info
 	for t, i := range m.tokenMap {
 		fmt.Println(t, i.Uid, i.SignedAt.Format(time.DateTime), i.ExpireAt.Format(time.DateTime))
 	}
-	m.mu.Unlock()
 
 	return info.Uid, nil
 }
