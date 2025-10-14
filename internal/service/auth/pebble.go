@@ -46,12 +46,14 @@ func GetPebbleAuth() *PebbleAuth {
 					fmt.Println("panic:", err)
 				}
 			}()
-			select {
-			case token, ok := <-auth.verifyCh:
-				if !ok {
-					return
+			for {
+				select {
+				case token, ok := <-auth.verifyCh:
+					if !ok {
+						return
+					}
+					auth.HandleVerify(token)
 				}
-				auth.HandleVerify(token)
 			}
 		}()
 	})
