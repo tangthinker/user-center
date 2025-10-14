@@ -1,9 +1,10 @@
 package db
 
 import (
+	"sync"
+
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
-	"sync"
 )
 
 var (
@@ -32,4 +33,8 @@ func GetDB() *gorm.DB {
 
 func SetDBPath(path string) {
 	rootPath = path
+}
+
+func GetDBPath() string {
+	return rootPath
 }
