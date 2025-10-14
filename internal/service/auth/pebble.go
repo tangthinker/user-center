@@ -68,7 +68,7 @@ func (a *PebbleAuth) Get(key string) (string, error) {
 }
 
 func (a *PebbleAuth) Set(key string, value string) error {
-	return a.db.Set([]byte(key), []byte(value), pebble.NoSync)
+	return a.db.Set([]byte(key), []byte(value), pebble.Sync)
 }
 
 func (a *PebbleAuth) SetAny(key string, value any) error {
