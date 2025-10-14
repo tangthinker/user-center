@@ -139,7 +139,7 @@ func (a *PebbleAuth) HandleVerify(token string) {
 	if err != nil {
 		return
 	}
-	if tokenInfo.ExpireAt.After(time.Now()) {
+	if tokenInfo.ExpireAt.Before(time.Now()) {
 		err = a.Del(token)
 		if err != nil {
 			fmt.Println("delete invalid token error:", err)
