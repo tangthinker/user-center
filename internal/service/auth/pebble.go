@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"sync"
 	"time"
@@ -13,8 +14,9 @@ import (
 )
 
 type PebbleAuth struct {
-	db     *pebble.DB
-	dbpath string
+	db       *pebble.DB
+	dbpath   string
+	verifyCh chan string
 }
 
 var (
@@ -34,9 +36,24 @@ func GetPebbleAuth() *PebbleAuth {
 			panic("open pebble: " + err.Error())
 		}
 		auth = &PebbleAuth{
-			db:     pebbleDB,
-			dbpath: pebblePath,
+			db:       pebbleDB,
+			dbpath:   pebblePath,
+			verifyCh: make(chan string, 256),
 		}
+		go func() {
+			defer func() {
+				if err := recover(); err != nil {
+					fmt.Println("panic:", err)
+				}
+			}()
+			select {
+			case token, ok := <-auth.verifyCh:
+				if !ok {
+					return
+				}
+				auth.HandleVerify(token)
+			}
+		}()
 	})
 	return auth
 }
@@ -99,9 +116,41 @@ func (a *PebbleAuth) Verify(token string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	a.verifyCh <- token
 	now := time.Now()
 	if now.After(tokenInfo.ExpireAt) {
 		return "", errors.New("token expired")
 	}
 	return tokenInfo.Uid, nil
+}
+
+func (a *PebbleAuth) HandleVerify(token string) {
+	tokenInfoJson, err := a.Get(token)
+	if errors.Is(err, pebble.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		return
+	}
+	var tokenInfo TokenInfo
+	err = json.Unmarshal([]byte(tokenInfoJson), &tokenInfo)
+	if err != nil {
+		return
+	}
+	if tokenInfo.ExpireAt.After(time.Now()) {
+		err = a.Del(token)
+		if err != nil {
+			fmt.Println("delete invalid token error:", err)
+			return
+		}
+	}
+	threshold := time.Now().Add(10 * 24 * time.Hour)
+	if tokenInfo.ExpireAt.After(threshold) {
+		return
+	}
+	tokenInfo.ExpireAt = time.Now().Add(constrant.DefaultTokenTTL)
+	err = a.SetAny(token, tokenInfo)
+	if err != nil {
+		return
+	}
 }
