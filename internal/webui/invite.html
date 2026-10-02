@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>{{HEADLINE}} · {{SERVICE_NAME}}</title>
+{{FAVICON}}
+<link rel="stylesheet" href="{{ASSETS}}/style.css">
+</head>
+<body data-api="{{API}}">
+<main class="invite">
+  <section class="invite__card">
+    <div class="invite__brand">
+      {{APP_MARK}}
+      <div>
+        <h1>{{HEADLINE}}</h1>
+        <p class="small muted">{{SERVICE_NAME}} · {{SUBTITLE}}</p>
+      </div>
+    </div>
+
+    {{ERROR_BLOCK}}
+
+    <form id="form" {{FORM_HIDDEN}} novalidate>
+      <p class="small">
+        邀请发送至 <span id="email" class="invite__who">{{EMAIL}}</span>
+      </p>
+      <p id="expiry" class="field__hint mt-8">{{EXPIRY}}</p>
+
+      <div class="field mt-14" {{LABEL_HIDDEN}}>
+        <label class="field__label" for="uid">你的用户名</label>
+        <input id="uid" type="text" autocomplete="off" spellcheck="false" {{INPUT_HIDDEN}}
+               placeholder="3–32 个字符，字母开头，区分大小写"
+               aria-describedby="uid-hint uidState">
+        <p id="uid-hint" class="field__hint" {{HINT_HIDDEN}}>
+          可用字母、数字、下划线、连字符；不能以数字开头；部分名称被系统保留。
+        </p>
+        <p class="field__hint">激活后用户名不可修改，请谨慎选择。</p>
+      </div>
+
+      <p id="uidState" class="status mt-10">{{UID_HINT}}</p>
+
+      <div class="btn-row mt-14">
+        <button id="submit" class="btn btn--primary btn--block" type="submit">{{SUBMIT_LABEL}}</button>
+      </div>
+    </form>
+
+    <p id="error" class="status status--err" role="alert" hidden></p>
+    <p id="done" class="status status--ok" role="status" hidden>{{DONE_TEXT}}</p>
+  </section>
+
+  <p class="invite__foot">
+    本系统不使用密码：登录时用邮箱验证码即可。若此链接并非你本人所需，忽略本页即可。
+  </p>
+</main>
+<script src="{{ASSETS}}/invite.js"></script>
+</body>
+</html>

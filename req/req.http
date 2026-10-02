@@ -1,46 +1,104 @@
+# user-center v2 请求示例
+#
+# 变量：url = 公网面地址（经 Caddy），adminUrl = 管理面地址（仅本机）
+# 注意：v2 不再有 /login、/register、/modify-password、/uid-unique。
 
-POST http://{{url}}/api/v1/login
+### 请求登录验证码（无论邮箱是否存在，响应都一致）
+POST http://{{url}}/api/v1/otp/send
 Content-Type: application/json
 
 {
-  "uid" : "tangthinker",
-  "password" : "333"
+  "email": "alice@example.com"
 }
 
-###
-
-POST http://{{url}}/api/v1/register
-Content-Type: application/json
-X-tangthinker-secret: loveVG
-
-{
-  "uid" : "tangthinker",
-  "password" : "333"
-}
-
-###
-
-POST http://{{url}}/api/v1/modify-password
+### 用验证码换会话
+POST http://{{url}}/api/v1/otp/verify
 Content-Type: application/json
 
 {
-  "uid" : "tangthinker",
-    "old_password" : "333",
-    "new_password" : "444"
+  "email": "alice@example.com",
+  "code": "123456"
 }
 
-###
-POST http://{{url}}/api/v1/uid-unique
+### 校验会话
+POST http://{{url}}/api/v1/session/verify
 Content-Type: application/json
 
 {
-  "uid" : "tangthinker"
+  "token": "<上一步返回的 token>"
 }
 
-###
-POST http://{{url}}/api/v1/token-valid
+### 登出（吊销当前会话）
+POST http://{{url}}/api/v1/session/logout
 Content-Type: application/json
 
 {
-  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MzMxMjgxMDcsImp0aSI6InRhbmd0aGlua2VyIiwiaWF0IjoxNzMzMTI4MDQ3fQ.WlgqhlxYcy7yBxzoiGB4O5oPYrDJVWRQsufAHjAvwSI"
+  "token": "<token>"
 }
+
+### 邀请落地页（浏览器打开；GET 只读，不消费 token）
+GET http://{{url}}/api/v1/invite?token=<邮件里的 token>
+
+### 检查用户名是否可用（每 token 限 20 次）
+POST http://{{url}}/api/v1/invite/check-uid
+Content-Type: application/json
+
+{
+  "token": "<邀请 token>",
+  "uid": "alice"
+}
+
+### 激活账号（设置 uid；激活成功不发放会话）
+POST http://{{url}}/api/v1/invite/accept
+Content-Type: application/json
+
+{
+  "token": "<邀请 token>",
+  "uid": "alice"
+}
+
+# ---------------------------------------------------------------------------
+# 管理面（127.0.0.1，令牌放 Authorization 头，不使用 cookie）
+# ---------------------------------------------------------------------------
+
+### 管理员登录：请求验证码
+POST http://{{adminUrl}}/admin/otp/send
+Content-Type: application/json
+
+{
+  "email": "ops@example.com"
+}
+
+### 管理员登录：换令牌
+POST http://{{adminUrl}}/admin/otp/verify
+Content-Type: application/json
+
+{
+  "email": "ops@example.com",
+  "code": "123456"
+}
+
+### 用户列表
+GET http://{{adminUrl}}/admin/users
+Authorization: Bearer <admin token>
+
+### 新增用户（返回 invite_url 供人工送达）
+POST http://{{adminUrl}}/admin/users
+Authorization: Bearer <admin token>
+Content-Type: application/json
+
+{
+  "email": "bob@example.com"
+}
+
+### 重新生成邀请链接（旧链接立即失效）
+POST http://{{adminUrl}}/admin/users/2/invite/link
+Authorization: Bearer <admin token>
+
+### 踢下线
+POST http://{{adminUrl}}/admin/users/2/sessions/revoke
+Authorization: Bearer <admin token>
+
+### 概览（用户 / 队列 / 近 24h 发信）
+GET http://{{adminUrl}}/admin/stats
+Authorization: Bearer <admin token>

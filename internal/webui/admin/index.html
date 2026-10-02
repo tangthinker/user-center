@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<meta name="color-scheme" content="light dark">
+<title>{{SERVICE_NAME}} · 管理</title>
+{{FAVICON}}
+<link rel="stylesheet" href="{{ASSETS}}/style.css">
+</head>
+<body data-api="{{API}}">
+
+<!-- 未登录：居中登录卡（对应参考实现的 signin-card） -->
+<main id="login" class="signin">
+  <section class="signin__card" aria-labelledby="login-title">
+    {{APP_MARK}}
+    <h1 id="login-title" class="signin__title">{{SERVICE_NAME}}</h1>
+    <p class="signin__sub">管理后台登录</p>
+
+    <form id="login-form" class="signin__form" novalidate>
+      <div class="field">
+        <label class="field__label" for="login-email">管理员邮箱</label>
+        <input id="login-email" name="email" type="email" autocomplete="username"
+               spellcheck="false" required autofocus aria-describedby="login-status">
+      </div>
+      <div class="btn-row mt-10">
+        <button id="login-send" class="btn" type="button">获取验证码</button>
+      </div>
+
+      <div id="login-code-wrap" class="field mt-14" hidden>
+        <label class="field__label" for="login-code">邮箱验证码</label>
+        <input id="login-code" name="code" type="text" inputmode="numeric"
+               autocomplete="one-time-code" maxlength="6" placeholder="6 位数字"
+               aria-describedby="login-status">
+        <div class="btn-row mt-8">
+          <button id="login-verify" class="btn btn--primary btn--block" type="button">登录</button>
+        </div>
+      </div>
+
+      <p id="login-status" class="status mt-10" role="status" aria-live="polite"></p>
+    </form>
+
+    <p class="signin__foot">
+      管理登录使用邮箱验证码，没有密码。令牌只保存在本页内存中，刷新需重新登录；本界面仅监听回环地址。
+    </p>
+  </section>
+</main>
+
+<!-- 已登录：材质工具栏 + 分组内容 -->
+<div id="app" hidden>
+  <header class="toolbar">
+    <div class="toolbar__id">
+      {{APP_MARK_SM}}
+      <div>
+        <div class="toolbar__name">{{SERVICE_NAME}}</div>
+        <div class="toolbar__sub">管理员 <span id="admin-who" class="mono"></span></div>
+      </div>
+    </div>
+    <span class="toolbar__spacer"></span>
+    <div class="toolbar__tools">
+      <span id="queue-chip" class="chip chip--plain" hidden>队列</span>
+      <button id="sign-out" class="btn btn--sm" type="button">退出登录</button>
+    </div>
+  </header>
+
+  <div class="content">
+
+    <section class="section" aria-labelledby="stats-title">
+      <div class="section__head">
+        <h2 id="stats-title" class="section__title">概览</h2>
+        <span id="stats-updated" class="section__note"></span>
+      </div>
+      <div class="group">
+        <div id="stats" class="stats">
+          <div class="skeleton" aria-hidden="true"><span></span><span></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="create-title">
+      <div class="section__head">
+        <h2 id="create-title" class="section__title">邀请新用户</h2>
+        <span class="section__note">7 天有效 · 只能使用一次</span>
+      </div>
+      <div class="group">
+        <div class="group__pad">
+          <form id="create-form" class="form-row" novalidate>
+            <div class="field">
+              <label class="field__label" for="new-email">用户邮箱</label>
+              <input id="new-email" name="email" type="email" autocomplete="off"
+                     spellcheck="false" placeholder="someone@example.com" required
+                     aria-describedby="create-hint create-status">
+            </div>
+            <button id="new-create" class="btn btn--primary" type="submit">创建并发送邀请</button>
+          </form>
+          <p id="create-status" class="status mt-8" role="status" aria-live="polite"></p>
+        </div>
+
+        <p id="create-hint" class="group__foot">
+          系统会把一条绑定该邮箱的邀请链接发给对方；对方点击后<strong>自己设置用户名</strong>，激活后即可用验证码登录。
+        </p>
+
+        <!-- 签名元素：一次性链接揭示 -->
+        <div id="reveal" class="reveal" role="group" aria-labelledby="reveal-badge" hidden>
+          <div class="reveal__head">
+            <span id="reveal-badge" class="reveal__badge">一次性链接</span>
+            <span class="reveal__warn">只显示这一次</span>
+          </div>
+          <div class="reveal__link">
+            <span id="reveal-url" class="reveal__url"></span>
+            <button id="reveal-copy" class="btn btn--sm" type="button">复制</button>
+          </div>
+          <p class="field__hint">
+            服务端只保存该链接的哈希，关闭或刷新后无法再次显示；
+            <strong>重新生成会让此链接立即失效</strong>，请现在复制并通过可靠渠道发给对方。
+          </p>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="users-title">
+      <div class="section__head">
+        <h2 id="users-title" class="section__title">用户</h2>
+        <span id="users-count" class="section__note"></span>
+      </div>
+      <div class="group">
+        <div id="users" aria-live="polite">
+          <div class="skeleton" aria-hidden="true"><span></span><span></span><span></span></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section" aria-labelledby="audit-title">
+      <div class="section__head">
+        <h2 id="audit-title" class="section__title">操作审计</h2>
+        <span class="section__note">最近 50 条</span>
+      </div>
+      <div class="group">
+        <div id="audit" aria-live="polite">
+          <div class="skeleton" aria-hidden="true"><span></span><span></span></div>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<!-- 提示条：成功与失败语义不同；带真实关闭按钮，键盘亦可收起 -->
+<div id="toast" class="toast" role="status" aria-live="polite" hidden>
+  <span id="toast-text"></span>
+  <button id="toast-close" class="toast__close" type="button" aria-label="关闭提示">&times;</button>
+</div>
+
+<!-- 对话框：替代 window.confirm / window.prompt -->
+<dialog id="ask" class="dialog" aria-labelledby="ask-title" aria-describedby="ask-body">
+  <div class="dialog__head"><h2 id="ask-title"></h2></div>
+  <p id="ask-body" class="dialog__body"></p>
+  <div id="ask-field" class="dialog__field field" hidden>
+    <label class="field__label" for="ask-input" id="ask-label"></label>
+    <input id="ask-input" type="text" autocomplete="off" spellcheck="false">
+  </div>
+  <div class="dialog__actions">
+    <button id="ask-cancel" class="btn" type="button">取消</button>
+    <button id="ask-confirm" class="btn btn--primary" type="button">确定</button>
+  </div>
+</dialog>
+
+<script src="{{ASSETS}}/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,294 @@
+// Package session 实现服务端会话：签发、校验（含续期）、吊销。
+//
+// 设计要点（docs/auth-redesign.md §5.4）：
+//   - 服务端只保存 sha256(token)，明文永不落库（不变量 I3）；
+//   - 双过期：idle 可续、absolute 不可破；
+//   - 续期只在 idle 剩余不足阈值时发生，避免每个请求都写库；
+//   - 吊销按 user_id 批量执行，使"改邮箱/停用/被踢"立即生效。
+package session
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/tangthinker/user-center/v2/internal/domain"
+	"github.com/tangthinker/user-center/v2/internal/secure"
+	"gorm.io/gorm"
+)
+
+// 校验失败的原因。对外一律映射为统一的 401 文案（设计 §6.6），
+// 这些哨兵错误只用于内部判断与测试。
+var (
+	ErrInvalid = errors.New("session: invalid token")
+	ErrExpired = errors.New("session: token expired")
+	ErrRevoked = errors.New("session: token revoked")
+)
+
+// Config 是会话策略。零值可用 DefaultConfig 填充。
+type Config struct {
+	// IdleTTL 是普通用户会话的空闲有效期。
+	IdleTTL time.Duration
+	// AbsoluteTTL 是普通用户会话的绝对有效期（续期不可突破）。
+	AbsoluteTTL time.Duration
+	// RenewWindow 是续期阈值：idle 剩余不足该值时续期。
+	// 为 0 时取 IdleTTL/2。
+	RenewWindow time.Duration
+
+	// AdminIdleTTL / AdminAbsoluteTTL 是管理会话的策略（更短）。
+	AdminIdleTTL     time.Duration
+	AdminAbsoluteTTL time.Duration
+
+	// Now 可注入时钟，便于测试；为 nil 时使用 UTC 当前时间。
+	Now func() time.Time
+}
+
+// DefaultConfig 返回设计文档 §5.4 确定的默认策略。
+func DefaultConfig() Config {
+	return Config{
+		IdleTTL:          7 * 24 * time.Hour,
+		AbsoluteTTL:      30 * 24 * time.Hour,
+		AdminIdleTTL:     30 * time.Minute,
+		AdminAbsoluteTTL: 8 * time.Hour,
+	}
+}
+
+func (c Config) withDefaults() Config {
+	if c.Now == nil {
+		c.Now = func() time.Time { return time.Now().UTC() }
+	}
+	if c.IdleTTL <= 0 {
+		c.IdleTTL = 7 * 24 * time.Hour
+	}
+	if c.AbsoluteTTL <= 0 {
+		c.AbsoluteTTL = 30 * 24 * time.Hour
+	}
+	if c.RenewWindow <= 0 {
+		c.RenewWindow = c.IdleTTL / 2
+	}
+	if c.AdminIdleTTL <= 0 {
+		c.AdminIdleTTL = 30 * time.Minute
+	}
+	if c.AdminAbsoluteTTL <= 0 {
+		c.AdminAbsoluteTTL = 8 * time.Hour
+	}
+	return c
+}
+
+// Service 是会话服务。它不持有任何包级状态，可安全地被多个实例使用（L2）。
+type Service struct {
+	db  *gorm.DB
+	cfg Config
+}
+
+// New 构造会话服务。
+func New(db *gorm.DB, cfg Config) *Service {
+	return &Service{db: db, cfg: cfg.withDefaults()}
+}
+
+// WithTx 返回绑定到同一事务的副本，供编排层在一个事务里组合多个服务。
+func (s *Service) WithTx(tx *gorm.DB) *Service {
+	c := *s
+	c.db = tx
+	return &c
+}
+
+func (s *Service) now() time.Time { return s.cfg.Now().UTC() }
+
+// ttlFor 返回给定作用域的空闲/绝对有效期。
+func (s *Service) ttlFor(scope string) (idle, absolute time.Duration) {
+	if scope == domain.ScopeAdmin {
+		return s.cfg.AdminIdleTTL, s.cfg.AdminAbsoluteTTL
+	}
+	return s.cfg.IdleTTL, s.cfg.AbsoluteTTL
+}
+
+// IssueParams 是签发会话所需的上下文。
+type IssueParams struct {
+	UserID int64
+	UID    string
+	Scope  string // domain.ScopeUser / domain.ScopeAdmin
+	IP     string
+	UAHash string
+}
+
+// Issued 是签发结果。Plain 只在此处出现一次。
+type Issued struct {
+	Plain   string
+	Session *domain.Session
+}
+
+// Issue 签发一个新会话。
+func (s *Service) Issue(ctx context.Context, p IssueParams) (*Issued, error) {
+	if p.UserID == 0 {
+		return nil, errors.New("session: UserID is required")
+	}
+	scope := p.Scope
+	if scope == "" {
+		scope = domain.ScopeUser
+	}
+
+	plain, hash, err := secure.NewToken()
+	if err != nil {
+		return nil, err
+	}
+
+	now := s.now()
+	idleTTL, absTTL := s.ttlFor(scope)
+	rec := &domain.Session{
+		TokenHash:         hash,
+		UserID:            p.UserID,
+		UID:               p.UID,
+		Scope:             scope,
+		IssuedAt:          now,
+		IdleExpiresAt:     now.Add(idleTTL),
+		AbsoluteExpiresAt: now.Add(absTTL),
+		LastSeenAt:        now,
+		IP:                optString(p.IP),
+		UAHash:            optString(p.UAHash),
+	}
+	if err := s.db.WithContext(ctx).Create(rec).Error; err != nil {
+		return nil, fmt.Errorf("session: create: %w", err)
+	}
+	return &Issued{Plain: plain, Session: rec}, nil
+}
+
+// Verify 校验 token 并返回会话。命中且满足续期条件时会顺带续期。
+func (s *Service) Verify(ctx context.Context, plain string) (*domain.Session, error) {
+	if plain == "" {
+		return nil, ErrInvalid
+	}
+
+	var rec domain.Session
+	err := s.db.WithContext(ctx).
+		Where("token_hash = ?", secure.HashToken(plain)).
+		First(&rec).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return nil, ErrInvalid
+	}
+	if err != nil {
+		return nil, fmt.Errorf("session: lookup: %w", err)
+	}
+
+	now := s.now()
+	if rec.RevokedAt != nil {
+		return nil, ErrRevoked
+	}
+	if !now.Before(rec.AbsoluteExpiresAt) {
+		return nil, ErrExpired
+	}
+	if !now.Before(rec.IdleExpiresAt) {
+		return nil, ErrExpired
+	}
+
+	if err := s.maybeRenew(ctx, &rec, now); err != nil {
+		// 续期失败不应导致校验失败：会话本身仍然有效。
+		// 这里不返回错误，把可用性放在首位；失败会在下一次请求重试。
+		_ = err
+	}
+	return &rec, nil
+}
+
+// maybeRenew 在 idle 剩余不足阈值时续期，且永不突破绝对有效期。
+func (s *Service) maybeRenew(ctx context.Context, rec *domain.Session, now time.Time) error {
+	if rec.IdleExpiresAt.Sub(now) >= s.cfg.RenewWindow {
+		return nil
+	}
+	idleTTL, _ := s.ttlFor(rec.Scope)
+
+	next := now.Add(idleTTL)
+	if next.After(rec.AbsoluteExpiresAt) {
+		next = rec.AbsoluteExpiresAt
+	}
+
+	res := s.db.WithContext(ctx).
+		Model(&domain.Session{}).
+		Where("token_hash = ? AND revoked_at IS NULL", rec.TokenHash).
+		Updates(map[string]any{
+			"idle_expires_at": next,
+			"last_seen_at":    now,
+		})
+	if res.Error != nil {
+		return res.Error
+	}
+	if res.RowsAffected == 1 {
+		rec.IdleExpiresAt = next
+		rec.LastSeenAt = now
+	}
+	return nil
+}
+
+// Revoke 吊销单个会话（logout）。对不存在的 token 返回 nil（幂等）。
+func (s *Service) Revoke(ctx context.Context, plain, reason string) error {
+	if plain == "" {
+		return ErrInvalid
+	}
+	now := s.now()
+	res := s.db.WithContext(ctx).
+		Model(&domain.Session{}).
+		Where("token_hash = ? AND revoked_at IS NULL", secure.HashToken(plain)).
+		Updates(map[string]any{
+			"revoked_at":    now,
+			"revoke_reason": optString(reason),
+		})
+	if res.Error != nil {
+		return fmt.Errorf("session: revoke: %w", res.Error)
+	}
+	return nil
+}
+
+// RevokeAllForUser 吊销某用户的全部有效会话，返回被吊销的数量。
+//
+// 这是"改邮箱 / 停用 / 管理员踢人"的实现基础：由于两处代码共享同一个
+// 数据库，吊销在下一次请求即生效（§5.4）。
+func (s *Service) RevokeAllForUser(ctx context.Context, userID int64, reason string) (int64, error) {
+	if userID == 0 {
+		return 0, errors.New("session: UserID is required")
+	}
+	now := s.now()
+	res := s.db.WithContext(ctx).
+		Model(&domain.Session{}).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Updates(map[string]any{
+			"revoked_at":    now,
+			"revoke_reason": optString(reason),
+		})
+	if res.Error != nil {
+		return 0, fmt.Errorf("session: revoke all: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
+// ListForUser 返回某用户的全部未吊销会话，供管理界面展示。
+func (s *Service) ListForUser(ctx context.Context, userID int64) ([]domain.Session, error) {
+	var out []domain.Session
+	err := s.db.WithContext(ctx).
+		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Order("issued_at DESC").
+		Find(&out).Error
+	if err != nil {
+		return nil, fmt.Errorf("session: list: %w", err)
+	}
+	return out, nil
+}
+
+// DeleteExpired 清理已过期或已吊销超过 30 天的会话，返回删除行数。
+func (s *Service) DeleteExpired(ctx context.Context) (int64, error) {
+	now := s.now()
+	res := s.db.WithContext(ctx).
+		Where("absolute_expires_at < ? OR (revoked_at IS NOT NULL AND revoked_at < ?)",
+			now, now.Add(-30*24*time.Hour)).
+		Delete(&domain.Session{})
+	if res.Error != nil {
+		return 0, fmt.Errorf("session: delete expired: %w", res.Error)
+	}
+	return res.RowsAffected, nil
+}
+
+func optString(s string) *string {
+	if s == "" {
+		return nil
+	}
+	return &s
+}
