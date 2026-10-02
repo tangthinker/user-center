@@ -570,7 +570,8 @@ CREATE TABLE schema_migrations (
 | 服务端存储 | `sha256(token)` | 同 |
 | 空闲有效期 | 7 天 | 30 分钟 |
 | 绝对有效期 | 30 天 | 8 小时 |
-| 续期 | 仅当 `idle_expires_at - now < 3.5 天` 时推到 `now+7d`，且**不超过** `absolute_expires_at` | 同理，推到 now+30m |
+| 续期阈值 | `IdleTTL/2`（7 天 → 3.5 天） | `AdminIdleTTL/2`（30 分钟 → 15 分钟）**独立取值** |
+| 续期 | 仅当 `idle 剩余 < 阈值` 时推到 `now+idleTTL`，且**不超过** `absolute_expires_at` | 同左 |
 | 吊销 | `revoked_at` 置位；logout / 管理员操作 / 停用 / 改邮箱 | 同 |
 
 校验路径（`/session/verify`、`pkg.TokenValid`）：
@@ -588,6 +589,10 @@ sha256(token) → SELECT … WHERE token_hash=?
 UPDATE sessions SET revoked_at=CURRENT_TIMESTAMP, revoke_reason=?
 WHERE user_id=? AND revoked_at IS NULL;
 ```
+
+> **续期阈值必须按 scope 分别取值。** 管理会话 idle 只有 30 分钟，若沿用用户会话的 3.5 天阈值，
+> "剩余不足 3.5 天"永远成立 ⇒ 每次校验都写一次库；反过来若推导顺序写错（先算阈值再补 TTL 默认值），
+> 阈值会恒为 0 ⇒ 管理会话永不续期、30 分钟必定掉线。两种情况都已在实现中修正并加了回归测试。
 
 **不做 IP/UA 硬绑定**：移动网络下 IP 频繁变化会误伤；`ip` 与 `ua_hash` 仅用于审计，UA 突变时可作为风险信号记录（本期不阻断）。
 

@@ -454,10 +454,24 @@ func TestOTPVerifyIssuesSessionAndLogoutRevokesIt(t *testing.T) {
 		t.Fatalf("verify data = %+v", res.data())
 	}
 
-	// 会话校验
+	// 会话校验：必须一并返回期限，否则客户端无法在到期前提示重新验证
 	sess := e.do(t, http.MethodPost, "/api/v1/session/verify", map[string]string{"token": token})
 	if sess.status != http.StatusOK || sess.data()["uid"] != "alice" || sess.data()["scope"] != "user" {
 		t.Fatalf("session verify = %d %s", sess.status, sess.raw)
+	}
+	for _, key := range []string{"expires_at", "absolute_expires_at", "idle_seconds_left", "absolute_seconds_left"} {
+		if _, okField := sess.data()[key]; !okField {
+			t.Errorf("会话校验响应缺少 %q：%s", key, sess.raw)
+		}
+	}
+	idleLeft, _ := sess.data()["idle_seconds_left"].(float64)
+	absLeft, _ := sess.data()["absolute_seconds_left"].(float64)
+	// 用户会话默认 idle 7 天 / absolute 30 天；两个倒计时都应为正且 absolute 不小于 idle
+	if idleLeft <= 0 || absLeft <= 0 {
+		t.Errorf("倒计时应为正数：idle=%v absolute=%v", idleLeft, absLeft)
+	}
+	if absLeft < idleLeft {
+		t.Errorf("absolute 倒计时应不小于 idle：idle=%v absolute=%v", idleLeft, absLeft)
 	}
 
 	// 登出

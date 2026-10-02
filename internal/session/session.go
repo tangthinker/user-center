@@ -32,9 +32,15 @@ type Config struct {
 	IdleTTL time.Duration
 	// AbsoluteTTL 是普通用户会话的绝对有效期（续期不可突破）。
 	AbsoluteTTL time.Duration
-	// RenewWindow 是续期阈值：idle 剩余不足该值时续期。
-	// 为 0 时取 IdleTTL/2。
+	// RenewWindow 是**用户会话**的续期阈值：idle 剩余不足该值时续期。
+	// 为 0 时取 IdleTTL/2（7 天 → 3.5 天）。
 	RenewWindow time.Duration
+
+	// AdminRenewWindow 是**管理会话**的续期阈值，为 0 时取 AdminIdleTTL/2（30 分钟 → 15 分钟）。
+	//
+	// 必须按 scope 分别取值：管理会话 idle 只有 30 分钟，若沿用用户会话的 3.5 天阈值，
+	// "剩余不足 3.5 天"永远成立 ⇒ 每次校验都写一次库（实测确认过这个写放大）。
+	AdminRenewWindow time.Duration
 
 	// AdminIdleTTL / AdminAbsoluteTTL 是管理会话的策略（更短）。
 	AdminIdleTTL     time.Duration
@@ -58,20 +64,28 @@ func (c Config) withDefaults() Config {
 	if c.Now == nil {
 		c.Now = func() time.Time { return time.Now().UTC() }
 	}
+
+	// 顺序很关键：先把两个 scope 的基准 TTL 补全，再据此推导续期阈值。
+	// （曾把 AdminRenewWindow 的推导写在 AdminIdleTTL 之前，结果阈值恒为 0，
+	// "剩余不足 0"永远成立 ⇒ 管理会话**永不续期**，30 分钟必定掉线。）
 	if c.IdleTTL <= 0 {
 		c.IdleTTL = 7 * 24 * time.Hour
 	}
 	if c.AbsoluteTTL <= 0 {
 		c.AbsoluteTTL = 30 * 24 * time.Hour
 	}
-	if c.RenewWindow <= 0 {
-		c.RenewWindow = c.IdleTTL / 2
-	}
 	if c.AdminIdleTTL <= 0 {
 		c.AdminIdleTTL = 30 * time.Minute
 	}
 	if c.AdminAbsoluteTTL <= 0 {
 		c.AdminAbsoluteTTL = 8 * time.Hour
+	}
+
+	if c.RenewWindow <= 0 {
+		c.RenewWindow = c.IdleTTL / 2
+	}
+	if c.AdminRenewWindow <= 0 {
+		c.AdminRenewWindow = c.AdminIdleTTL / 2
 	}
 	return c
 }
@@ -95,6 +109,14 @@ func (s *Service) WithTx(tx *gorm.DB) *Service {
 }
 
 func (s *Service) now() time.Time { return s.cfg.Now().UTC() }
+
+// renewWindowFor 返回给定作用域的续期阈值。
+func (s *Service) renewWindowFor(scope string) time.Duration {
+	if scope == domain.ScopeAdmin {
+		return s.cfg.AdminRenewWindow
+	}
+	return s.cfg.RenewWindow
+}
 
 // ttlFor 返回给定作用域的空闲/绝对有效期。
 func (s *Service) ttlFor(scope string) (idle, absolute time.Duration) {
@@ -192,7 +214,7 @@ func (s *Service) Verify(ctx context.Context, plain string) (*domain.Session, er
 
 // maybeRenew 在 idle 剩余不足阈值时续期，且永不突破绝对有效期。
 func (s *Service) maybeRenew(ctx context.Context, rec *domain.Session, now time.Time) error {
-	if rec.IdleExpiresAt.Sub(now) >= s.cfg.RenewWindow {
+	if rec.IdleExpiresAt.Sub(now) >= s.renewWindowFor(rec.Scope) {
 		return nil
 	}
 	idleTTL, _ := s.ttlFor(rec.Scope)

@@ -5,6 +5,7 @@ import (
 	"html"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/tangthinker/user-center/v2/internal/app"
@@ -286,7 +287,20 @@ func (p *Public) handleSessionVerify(c *fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err, p.cfg.OnError)
 	}
-	return ok(c, fiber.Map{"uid": sess.UID, "scope": sess.Scope})
+	// 把期限一并告知客户端：否则它无法在到期前做任何动作
+	// （提前提示重新验证，或在最后窗口内交换/轮换）。
+	//
+	// 用 app 的时钟而不是 time.Now()：库支持宿主注入时钟，混用两个时钟源
+	// 会让倒计时错乱（测试里当场抓到：假时钟签发的会话配上真实时钟算出负数）。
+	now := p.app.Now()
+	return ok(c, fiber.Map{
+		"uid":                   sess.UID,
+		"scope":                 sess.Scope,
+		"expires_at":            sess.IdleExpiresAt.UTC().Format(time.RFC3339),
+		"absolute_expires_at":   sess.AbsoluteExpiresAt.UTC().Format(time.RFC3339),
+		"idle_seconds_left":     int64(sess.IdleExpiresAt.Sub(now).Seconds()),
+		"absolute_seconds_left": int64(sess.AbsoluteExpiresAt.Sub(now).Seconds()),
+	})
 }
 
 func (p *Public) handleSessionLogout(c *fiber.Ctx) error {

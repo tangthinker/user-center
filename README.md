@@ -127,7 +127,7 @@ var emailAccount = emailSettings{
 | POST | `/invite/accept` | `{token, uid}` → 激活（不发放会话） |
 | POST | `/otp/send` | `{email}` → 统一响应（未知邮箱也一样） |
 | POST | `/otp/verify` | `{email, code}` → `{token, uid}` |
-| POST | `/session/verify` | `{token}` → `{uid, scope}` |
+| POST | `/session/verify` | `{token}` → `{uid, scope, expires_at, absolute_expires_at, idle_seconds_left, absolute_seconds_left}` |
 | POST | `/session/logout` | `{token}` → 吊销当前会话 |
 
 响应统一为 `{"code":0,"msg":"success","data":{…}}`，**并同时返回正确的 HTTP 状态码**：
@@ -321,6 +321,8 @@ DNS（到达率的关键；MX 应已随域名绑定完成）：SPF
   管理员自己那条链接走的是同一个页面，只是文案变成「设置用户名 / 保存用户名」。
 - **复制邀请链接**的语义是"重新生成"：服务端只存 `sha256(token)`，明文无法二次取回；
   点击后旧链接立即失效。
+- **会话期限**：`/session/verify` 会返回 `absolute_expires_at` 与 `absolute_seconds_left`，
+  客户端据此在到期前提示"请重新验证邮箱"，而不是等 401 才被动处理。
 - **踢下线**：停用用户、改邮箱、管理员手动踢出都会即时吊销该用户全部会话。
 - **邮件积压**：`GET /admin/stats` 的 `queue.pending` / `queue.failed` 是最需要告警的两个数字；
   也可以通过 `Hooks.MailFailed` / `Hooks.WorkerError` 接到宿主自己的告警体系。

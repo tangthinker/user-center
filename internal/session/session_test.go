@@ -335,3 +335,113 @@ func TestIssueRequiresUserID(t *testing.T) {
 }
 
 func strPtr(s string) *string { return &s }
+
+// 续期阈值必须按 scope 推导。
+//
+// 回归背景：阈值一度全局取 IdleTTL/2（3.5 天），而管理会话 idle 只有 30 分钟，
+// 于是"剩余不足 3.5 天"永远成立 ⇒ 管理会话**每次校验都写一次库**。
+func TestRenewWindowIsPerScope(t *testing.T) {
+	db := testsupport.OpenDB(t)
+	clock := testsupport.NewClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	svc := session.New(db, session.Config{Now: clock.Now})
+	ctx := context.Background()
+
+	admin := testsupport.CreateUser(t, db, "ops@example.com", domain.UserStatusActive, strPtr("ops"))
+	user := testsupport.CreateUser(t, db, "alice@example.com", domain.UserStatusActive, strPtr("alice"))
+
+	adminSess, err := svc.Issue(ctx, session.IssueParams{UserID: admin.ID, UID: "ops", Scope: domain.ScopeAdmin})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSess, err := svc.Issue(ctx, session.IssueParams{UserID: user.ID, UID: "alice", Scope: domain.ScopeUser})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	lastSeen := func(tokenHash []byte) time.Time {
+		var ts time.Time
+		if err := db.Raw(`SELECT last_seen_at FROM sessions WHERE token_hash = ?`, tokenHash).
+			Row().Scan(&ts); err != nil {
+			t.Fatal(err)
+		}
+		return ts
+	}
+	adminHash := secure.HashToken(adminSess.Plain)
+	userHash := secure.HashToken(userSess.Plain)
+
+	// 管理会话：剩余 29 分钟（阈值 15 分钟）→ 不该写库
+	clock.Advance(time.Minute)
+	before := lastSeen(adminHash)
+	if _, err := svc.Verify(ctx, adminSess.Plain); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastSeen(adminHash); !got.Equal(before) {
+		t.Errorf("管理会话剩余 29 分钟时不应续期（阈值 15 分钟），实际写库了")
+	}
+
+	// 管理会话：推进到剩余 10 分钟 → 该续期，且 idle 被推到 now+30m
+	clock.Advance(19 * time.Minute)
+	if _, err := svc.Verify(ctx, adminSess.Plain); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastSeen(adminHash); got.Equal(before) {
+		t.Errorf("管理会话剩余 10 分钟时应续期，实际没写库")
+	}
+
+	// 用户会话：剩余 6 天（阈值 3.5 天）→ 不该写库
+	userBefore := lastSeen(userHash)
+	clock.Advance(24 * time.Hour)
+	if _, err := svc.Verify(ctx, userSess.Plain); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastSeen(userHash); !got.Equal(userBefore) {
+		t.Errorf("用户会话剩余 6 天时不应续期（阈值 3.5 天）")
+	}
+
+	// 用户会话：推进到剩余 3 天 → 该续期
+	clock.Advance(3 * 24 * time.Hour)
+	if _, err := svc.Verify(ctx, userSess.Plain); err != nil {
+		t.Fatal(err)
+	}
+	if got := lastSeen(userHash); got.Equal(userBefore) {
+		t.Errorf("用户会话剩余 3 天时应续期")
+	}
+}
+
+// 自定义阈值同样按 scope 生效。
+func TestCustomRenewWindows(t *testing.T) {
+	db := testsupport.OpenDB(t)
+	clock := testsupport.NewClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	svc := session.New(db, session.Config{
+		IdleTTL:          24 * time.Hour,
+		AbsoluteTTL:      48 * time.Hour,
+		RenewWindow:      2 * time.Hour,
+		AdminIdleTTL:     2 * time.Hour,
+		AdminAbsoluteTTL: 8 * time.Hour,
+		AdminRenewWindow: 30 * time.Minute,
+		Now:              clock.Now,
+	})
+	user := testsupport.CreateUser(t, db, "alice@example.com", domain.UserStatusActive, strPtr("alice"))
+	ctx := context.Background()
+
+	sess, err := svc.Issue(ctx, session.IssueParams{UserID: user.ID, UID: "alice"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 剩余 3 小时 > 2 小时阈值 → 不续期
+	clock.Advance(21 * time.Hour)
+	var before time.Time
+	if err := db.Raw(`SELECT last_seen_at FROM sessions LIMIT 1`).Row().Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Verify(ctx, sess.Plain); err != nil {
+		t.Fatal(err)
+	}
+	var after time.Time
+	if err := db.Raw(`SELECT last_seen_at FROM sessions LIMIT 1`).Row().Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if !after.Equal(before) {
+		t.Error("剩余 3 小时 > 阈值 2 小时，不应续期")
+	}
+}
