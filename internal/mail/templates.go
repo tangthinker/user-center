@@ -40,11 +40,37 @@ type RendererConfig struct {
 	InvitePath string
 	// SupportEmail 可选：出现在正文中，供用户求助。
 	SupportEmail string
+	// TimeZone 决定正文里"给人看"的时间按哪个时区渲染。
+	//
+	// 取值是 IANA 时区名（"Asia/Shanghai"、"UTC"）或 "Local"；
+	// 留空表示跟随宿主进程的本地时区（time.Local）。
+	//
+	// 库内部一律以 UTC 存储与比较时间，这个配置**只影响显示**：让收件人直接看到
+	// 自己那口钟上的点数，而不是需要自己 +8 小时换算的 UTC（见 humanTime 的注释）。
+	TimeZone string
 }
 
 // DefaultRenderer 是本库内置的中文模板渲染器。
 type DefaultRenderer struct {
 	cfg RendererConfig
+	loc *time.Location
+}
+
+// LocationFor 解析"给人看的时间"所用时区。
+//
+// 空字符串表示跟随宿主进程的本地时区；其余取值交给 time.LoadLocation
+// （"UTC"、"Local"、"Asia/Shanghai" 都可用）。解析失败返回错误，
+// 好让宿主在启动阶段就发现配置写错了，而不是等用户收到一封时间诡异的邮件。
+func LocationFor(name string) (*time.Location, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return time.Local, nil
+	}
+	loc, err := time.LoadLocation(name)
+	if err != nil {
+		return nil, fmt.Errorf("mail: invalid time zone %q: %w", name, err)
+	}
+	return loc, nil
 }
 
 // NewRenderer 构造默认渲染器。
@@ -63,8 +89,15 @@ func NewRenderer(cfg RendererConfig) (*DefaultRenderer, error) {
 			return nil, fmt.Errorf("mail: RendererConfig.SupportEmail: %w", err)
 		}
 	}
-	return &DefaultRenderer{cfg: cfg}, nil
+	loc, err := LocationFor(cfg.TimeZone)
+	if err != nil {
+		return nil, err
+	}
+	return &DefaultRenderer{cfg: cfg, loc: loc}, nil
 }
+
+// Location 返回正文时间所用的时区（宿主可以把同一时区用在别的人类可读输出上）。
+func (r *DefaultRenderer) Location() *time.Location { return r.loc }
 
 // InviteURL 用公开基址拼接邀请链接。
 func (r *DefaultRenderer) InviteURL(token string) string {
@@ -144,7 +177,7 @@ func (r *DefaultRenderer) Build(template string, payload []byte) (Message, error
 如果你不认识发件方，请忽略本邮件。
 
 —— %s
-`, r.cfg.ServiceName, p.InviteURL, humanDeadline(p.ExpiresAt), r.cfg.ServiceName)
+`, r.cfg.ServiceName, p.InviteURL, humanDeadline(p.ExpiresAt, r.loc), r.cfg.ServiceName)
 		// 收件人由出队方填写（见 outbox.go）
 		return Message{Subject: r.subject("账号邀请：请设置你的用户名"), Text: text, HTML: htmlLink(text, p.InviteURL)}, nil
 
@@ -233,7 +266,7 @@ func (r *DefaultRenderer) Build(template string, payload []byte) (Message, error
 如果你不是本人操作，请立即检查主机的本地访问权限。
 
 —— %s
-`, r.cfg.ServiceName, humanTime(p.At), orUnknown(p.IP), orUnknown(p.UA), r.cfg.ServiceName)
+`, r.cfg.ServiceName, humanTime(p.At, r.loc), orUnknown(p.IP), orUnknown(p.UA), r.cfg.ServiceName)
 		return Message{Subject: r.subject("管理员登录通知"), Text: text}, nil
 
 	case TemplateAdminActionNotice:
@@ -248,7 +281,7 @@ func (r *DefaultRenderer) Build(template string, payload []byte) (Message, error
 时间：%s
 
 —— %s
-`, r.cfg.ServiceName, p.Action, orUnknown(p.Target), humanTime(p.At), r.cfg.ServiceName)
+`, r.cfg.ServiceName, p.Action, orUnknown(p.Target), humanTime(p.At, r.loc), r.cfg.ServiceName)
 		return Message{Subject: r.subject("管理员操作通知"), Text: text}, nil
 
 	default:
@@ -277,18 +310,30 @@ func decode(payload []byte, out any) error {
 	return nil
 }
 
-func humanTime(t time.Time) string {
+// humanTime 把时间渲染成"收件人看得懂的那一行"。
+//
+// 关键点：按 loc 显示**当地钟点**，并显式带上与 UTC 的偏移。
+//
+//	2026-10-04 12:13:12 +08:00   ← 北京收件人一眼就知道这是中午
+//	2026-10-04 04:13:12 +00:00   ← 而不是把 UTC 当成凌晨 4 点
+//
+// 偏移量不能省：它是收件人唯一能自查"这封邮件用的是不是我这里的时区"的线索，
+// 也让运维能把它和 UTC 的日志直接对上。
+func humanTime(t time.Time, loc *time.Location) string {
 	if t.IsZero() {
 		return "未知"
 	}
-	return t.UTC().Format("2006-01-02 15:04:05 UTC")
+	if loc == nil {
+		loc = time.Local
+	}
+	return t.In(loc).Format("2006-01-02 15:04:05 -07:00")
 }
 
-func humanDeadline(t time.Time) string {
+func humanDeadline(t time.Time, loc *time.Location) string {
 	if t.IsZero() {
 		return "7 天"
 	}
-	return humanTime(t)
+	return humanTime(t, loc)
 }
 
 func orUnknown(s string) string {

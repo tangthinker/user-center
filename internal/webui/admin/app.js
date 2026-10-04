@@ -603,7 +603,7 @@
         var mailed = d.mail_queued !== false;
         status(el('create-status'),
           mailed
-            ? '邀请已发送给 ' + email + '（有效期至 ' + (d.expires_at || '') + '）'
+            ? '邀请已发送给 ' + email + '（有效期至 ' + shortTime(d.expires_at) + '）'
             : '用户已创建，但邮件未入队（未配置发信）：请复制下面的链接人工送达',
           mailed ? 'ok' : undefined);
         if (d.invite_url) showReveal(d.invite_url, mailed ? '邀请链接（备用）' : '请人工送达此链接');

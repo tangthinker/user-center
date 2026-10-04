@@ -11,10 +11,17 @@ import (
 
 func newRenderer(t *testing.T) *mail.DefaultRenderer {
 	t.Helper()
+	// 固定 UTC：这些用例断言的是文案本身，不该随跑测试的机器的本地时区变化。
+	return newRendererIn(t, "UTC")
+}
+
+func newRendererIn(t *testing.T, tz string) *mail.DefaultRenderer {
+	t.Helper()
 	r, err := mail.NewRenderer(mail.RendererConfig{
 		ServiceName:   "云盘",
 		PublicBaseURL: "https://files.example.com",
 		SupportEmail:  "ops@example.com",
+		TimeZone:      tz,
 	})
 	if err != nil {
 		t.Fatalf("NewRenderer: %v", err)
@@ -22,12 +29,102 @@ func newRenderer(t *testing.T) *mail.DefaultRenderer {
 	return r
 }
 
-func TestRendererRequiresConfig(t *testing.T) {
+func TestRendererRejectsBadConfig(t *testing.T) {
 	if _, err := mail.NewRenderer(mail.RendererConfig{}); err == nil {
 		t.Fatal("expected error for missing ServiceName/PublicBaseURL")
 	}
 	if _, err := mail.NewRenderer(mail.RendererConfig{ServiceName: "x", PublicBaseURL: "y", SupportEmail: "bad"}); err == nil {
 		t.Fatal("expected error for invalid SupportEmail")
+	}
+	// 时区名写错要在构造时就失败：拖着只会让用户收到一封时间诡异的邮件。
+	if _, err := mail.NewRenderer(mail.RendererConfig{
+		ServiceName: "x", PublicBaseURL: "y", TimeZone: "Beijing/Chaoyang",
+	}); err == nil {
+		t.Fatal("expected error for unknown TimeZone")
+	}
+}
+
+// 时区展示：邮件里的时间必须是"收件人当地的钟点 + 明确偏移"，
+// 而不是需要自己换算的 UTC（北京中午 12:13 曾被渲染成 04:13 UTC）。
+func TestAdminLoginNoticeRendersTimeInConfiguredZone(t *testing.T) {
+	// 2026-10-04 04:13:12 UTC == 北京时间当天 12:13:12
+	at := time.Date(2026, 10, 4, 4, 13, 12, 0, time.UTC)
+	payload, err := mail.EncodePayload(mail.AdminLoginPayload{IP: "127.0.0.1", UA: "UA", At: at})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	cases := []struct {
+		tz   string
+		want string
+	}{
+		{"Asia/Shanghai", "2026-10-04 12:13:12 +08:00"},
+		{"UTC", "2026-10-04 04:13:12 +00:00"},
+	}
+	for _, c := range cases {
+		msg, err := newRendererIn(t, c.tz).Build(mail.TemplateAdminLoginNotice, payload)
+		if err != nil {
+			t.Fatalf("%s: Build: %v", c.tz, err)
+		}
+		if !strings.Contains(msg.Text, c.want) {
+			t.Errorf("%s: time line = %q, want it to contain %q", c.tz, msg.Text, c.want)
+		}
+	}
+}
+
+// 夏令时：必须按"那个时刻"的偏移渲染，而不是拿一个固定偏移糊上去。
+func TestHumanTimeFollowsDST(t *testing.T) {
+	r := newRendererIn(t, "America/New_York")
+	build := func(at time.Time) string {
+		t.Helper()
+		payload, err := mail.EncodePayload(mail.AdminActionPayload{Action: "disable_user", At: at})
+		if err != nil {
+			t.Fatal(err)
+		}
+		msg, err := r.Build(mail.TemplateAdminActionNotice, payload)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return msg.Text
+	}
+	if got := build(time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)); !strings.Contains(got, "2026-01-15 07:00:00 -05:00") {
+		t.Errorf("winter time = %q, want 07:00 -05:00", got)
+	}
+	if got := build(time.Date(2026, 7, 15, 12, 0, 0, 0, time.UTC)); !strings.Contains(got, "2026-07-15 08:00:00 -04:00") {
+		t.Errorf("summer time = %q, want 08:00 -04:00", got)
+	}
+}
+
+// 邀请失效时间走同一套规则；留空表示跟随宿主进程的本地时区。
+func TestInviteDeadlineUsesConfiguredZoneAndDefaultsToLocal(t *testing.T) {
+	expires := time.Date(2026, 3, 1, 12, 0, 0, 0, time.UTC)
+	payload, err := mail.EncodePayload(mail.InvitePayload{InviteURL: "https://files.example.com/i?token=t", ExpiresAt: expires})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	msg, err := newRendererIn(t, "Asia/Shanghai").Build(mail.TemplateInvite, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(msg.Text, "2026-03-01 20:00:00 +08:00") {
+		t.Errorf("invite expiry = %q, want 20:00:00 +08:00", msg.Text)
+	}
+
+	if loc := newRendererIn(t, "").Location(); loc != time.Local {
+		t.Errorf("empty TimeZone should follow the host's local zone, got %v", loc)
+	}
+	// 零值时间仍然是"未知"，不能渲染成 0001-01-01
+	zero, err := mail.EncodePayload(mail.InvitePayload{InviteURL: "https://x/y"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	msg, err = newRendererIn(t, "Asia/Shanghai").Build(mail.TemplateInvite, zero)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(msg.Text, "0001-") {
+		t.Errorf("zero expiry should not render a date: %q", msg.Text)
 	}
 }
 

@@ -350,6 +350,50 @@ func TestFullInviteFlow(t *testing.T) {
 	}
 }
 
+// 给人看的时间一律按 Config.TimeZone 渲染：
+//   - 邮件正文 / 邀请落地页：带偏移的当地钟点（北京 12:13 不再写成 04:13 UTC）；
+//   - 管理接口：RFC3339，由客户端按自己的时区显示。
+func TestInviteTimesUseConfiguredTimeZone(t *testing.T) {
+	h := newHarness(t, func(c *app.Config) { c.TimeZone = "Asia/Shanghai" })
+	ctx := context.Background()
+
+	res, err := h.app.AdminCreateUser(ctx, app.Actor{ID: 1, Email: "ops@example.com"}, "alice@example.com")
+	if err != nil {
+		t.Fatalf("AdminCreateUser: %v", err)
+	}
+	// 时钟固定在 2026-01-01 00:00 UTC，默认有效期 7 天。
+	if res.ExpiresAt != "2026-01-08T00:00:00Z" {
+		t.Errorf("CreateUserResult.ExpiresAt = %q, want RFC3339 UTC", res.ExpiresAt)
+	}
+
+	view, err := h.app.GetInvite(ctx, inviteTokenFromOutbox(t, h.db, "alice@example.com"))
+	if err != nil {
+		t.Fatalf("GetInvite: %v", err)
+	}
+	if want := "2026-01-08 08:00 +08:00"; view.ExpiresAt != want {
+		t.Errorf("InviteView.ExpiresAt = %q, want %q", view.ExpiresAt, want)
+	}
+}
+
+// 时区名写错必须在启动时就报错，而不是等用户收到一封时间不对的邮件。
+func TestNewRejectsUnknownTimeZone(t *testing.T) {
+	st, err := store.Open(store.Config{DBPath: t.TempDir()})
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	_, err = app.New(st, nil, app.Config{
+		ServiceName:   "测试服务",
+		PublicBaseURL: "https://svc.example.com",
+		HMACKey:       []byte("unit-test-hmac-key"),
+		TimeZone:      "Beijing/Chaoyang",
+	})
+	if err == nil {
+		t.Fatal("expected app.New to reject an unknown TimeZone")
+	}
+}
+
 func TestAcceptInviteRejectsBadUIDAndTakenUID(t *testing.T) {
 	h := newHarness(t, nil)
 	ctx := context.Background()

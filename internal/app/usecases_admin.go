@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/tangthinker/user-center/v2/internal/audit"
 	"github.com/tangthinker/user-center/v2/internal/domain"
@@ -29,8 +30,12 @@ type CreateUserResult struct {
 	User *domain.User
 	// InviteToken 是明文邀请 token，**只在此处出现一次**。
 	InviteToken string
-	ExpiresAt   string
-	MailQueued  bool
+	// ExpiresAt 是邀请失效时刻，RFC 3339（UTC）：由调用方按**客户端自己的**时区显示。
+	//
+	// 此前这里是 "2006-01-02 15:04" 的 UTC 墙上时间，看着却像本地时间，
+	// 于是管理界面上会凭空少 8 小时（与邮件里的时间对不上）。
+	ExpiresAt  string
+	MailQueued bool
 }
 
 // AdminCreateUser 创建待激活用户并发出邀请。
@@ -159,7 +164,7 @@ func (a *App) issueInviteTx(
 	out := &CreateUserResult{
 		User:        u,
 		InviteToken: plain,
-		ExpiresAt:   inv.ExpiresAt.UTC().Format("2006-01-02 15:04"),
+		ExpiresAt:   inv.ExpiresAt.UTC().Format(time.RFC3339),
 	}
 
 	if sendMail {

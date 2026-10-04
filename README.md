@@ -35,6 +35,7 @@ func main() {
 		ServiceName:         "云盘",                            // 出现在邮件主题与正文
 		PublicBaseURL:       "https://files.example.com",      // 该宿主自己的域名
 		InvitePath:          "/api/v1/invite",                 // 必须与下面挂载点一致
+		TimeZone:            "Asia/Shanghai",                  // 邮件/页面里时间的显示时区（留空=跟随本机）
 		BootstrapAdminEmail: "ops@example.com",                // 仅首次生效（幂等）
 		HMACKey:             []byte(os.Getenv("UC_HMAC_KEY")), // ≥16 字节，建议 32
 		UAHashSalt:          os.Getenv("UC_UA_HASH_SALT"),
@@ -112,6 +113,10 @@ var emailAccount = emailSettings{
   它会实际投递一封测试邮件——既验证连通性与凭据，也验证它是否落进了垃圾箱
   （SPF/DKIM/DMARC 是否生效）。同样地，宿主代码里也可以用
   `uc.VerifySMTP(ctx, &cfg)`（只连接认证、不发信）与 `uc.SendTestMail(ctx, &cfg, to)`。
+
+演示程序启动时会打印一行「时间显示时区」（例如 `Asia/Shanghai（现在是 2026-10-04 20:08:31 +08:00）`）：
+邮件与落地页里的时间就按它显示。默认跟随本机时区，跑在 UTC 的容器/服务器里时用
+`-tz Asia/Shanghai` 显式指定（对应宿主代码里的 `uc.Config.TimeZone`）。
 
 > ⚠ 演示程序把口令写在代码里只为方便本地试跑，**不要把填好口令的文件提交到仓库**；
 > 真实部署请让宿主从配置/密钥管理注入。
@@ -326,6 +331,14 @@ DNS（到达率的关键；MX 应已随域名绑定完成）：SPF
 - **踢下线**：停用用户、改邮箱、管理员手动踢出都会即时吊销该用户全部会话。
 - **邮件积压**：`GET /admin/stats` 的 `queue.pending` / `queue.failed` 是最需要告警的两个数字；
   也可以通过 `Hooks.MailFailed` / `Hooks.WorkerError` 接到宿主自己的告警体系。
+- **时间显示时区**：库内一切存储与比较都是 UTC，给人看的那些时间（登录通知/操作通知邮件、
+  邀请链接失效时间、落地页）按 `Config.TimeZone` 渲染，形如 `2026-10-04 12:13:12 +08:00`。
+  - 留空表示**跟随宿主进程的本地时区**（`time.Local`，即 `TZ` 环境变量或 `/etc/localtime`）；
+  - 宿主跑在 UTC 的容器/服务器里时必须显式设置，否则收件人看到的是 UTC，却容易被读成本地时间
+    （东八区的中午 12:13 会显示成 `04:13:12 +00:00`，看着像凌晨）；
+  - 管理界面/API 里的时间统一是 RFC 3339（带 `Z`），由浏览器自行换算成本地时间，不受此项影响；
+  - 启动时读 `instance.DisplayTimeZone()` 打一行日志，可以一眼确认当前用的是哪个时区；
+  - 时区名写错（`"Beijing/Chaoyang"`）会在 `New` 阶段直接报错，不会拖到发信时才出问题。
 - **清理任务**：宿主可周期调用 `instance.Maintenance(ctx)`（清理过期验证码/邀请/会话、
   已发送邮件、限流日志与审计）。
 - **备份与回滚**：备份 `user-center.db`（WAL 模式，建议用 `VACUUM INTO` 做一致性快照）。

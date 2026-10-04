@@ -127,6 +127,16 @@ type Config struct {
 	// SupportEmail 可选，出现在邮件正文中。
 	SupportEmail string
 
+	// TimeZone 是邮件与落地页里"给人看的时间"所用时区，取值是 IANA 时区名
+	// （"Asia/Shanghai"、"UTC"）或 "Local"；**留空表示跟随宿主进程的本地时区**。
+	//
+	// 库内部一律以 UTC 存储与比较时间，这个配置只影响显示。之所以需要它：
+	// 宿主常跑在 UTC 的容器/服务器里，若照 UTC 原样显示，北京的收件人会在
+	// 中午 12 点收到一封写着"时间：04:13:12"的登录提醒，只能自己 +8 小时换算。
+	//
+	// 现在的时间行形如：2026-10-04 12:13:12 +08:00（带偏移，收件人可自查时区）。
+	TimeZone string
+
 	// HMACKey 是验证码 HMAC 密钥（必填，至少 16 字节；建议 32 字节随机值）。
 	HMACKey []byte
 	// UAHashSalt 用于对 User-Agent 做不可逆摘要（审计用）。
@@ -202,6 +212,10 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
+	// 时区名写错要在启动时就说清楚，而不是等用户收到一封时间不对的邮件。
+	if _, err := mail.LocationFor(c.TimeZone); err != nil {
+		return fmt.Errorf("usercenter: Config.TimeZone: %w", err)
+	}
 	if c.Mail != nil {
 		if strings.TrimSpace(c.Mail.Host) == "" {
 			return errors.New("usercenter: Mail.Host is required（阿里企业邮箱为 smtp.qiye.aliyun.com）")
@@ -270,6 +284,7 @@ func New(cfg Config) (*UserCenter, error) {
 		PublicBaseURL:       cfg.PublicBaseURL,
 		InvitePath:          cfg.InvitePath,
 		SupportEmail:        cfg.SupportEmail,
+		TimeZone:            cfg.TimeZone,
 		BootstrapAdminEmail: cfg.BootstrapAdminEmail,
 		HMACKey:             cfg.HMACKey,
 		UAHashSalt:          cfg.UAHashSalt,
@@ -369,6 +384,12 @@ func (u *UserCenter) BootstrapResult() *app.BootstrapResult {
 
 // App 暴露用例层（宿主可直接调用全部业务动作）。
 func (u *UserCenter) App() *app.App { return u.app }
+
+// DisplayTimeZone 返回邮件与落地页里"给人看的时间"所用的时区。
+//
+// 宿主可以在启动日志里打一行，让运维一眼看出"这套实例现在按哪个时区显示时间"——
+// 时间显示错误通常没人报障，只会被默默误解。
+func (u *UserCenter) DisplayTimeZone() *time.Location { return u.app.DisplayLocation() }
 
 // DB 暴露 GORM 句柄（宿主做自有维护任务时使用）。
 func (u *UserCenter) DB() *gorm.DB { return u.store.DB() }

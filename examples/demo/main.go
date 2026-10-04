@@ -184,6 +184,7 @@ func main() {
 		serviceName = flag.String("service-name", "演示服务", "邮件中显示的服务名")
 		selfTest    = flag.Bool("test-mail", false, "启动后给管理员邮箱发一封测试邮件，然后退出")
 		iconPath    = flag.String("icon", "", "管理界面与落地页的应用图标（PNG/JPEG/WebP/GIF/ICO 文件路径）")
+		timeZone    = flag.String("tz", "", "邮件/页面里时间的显示时区（IANA 名，如 Asia/Shanghai；留空=跟随本机）")
 	)
 	flag.Parse()
 
@@ -214,6 +215,7 @@ func main() {
 		ServiceName:         *serviceName,
 		PublicBaseURL:       "http://" + *publicAddr,
 		InvitePath:          *mountPath + "/invite",
+		TimeZone:            *timeZone,
 		BootstrapAdminEmail: *adminEmail,
 		// 演示用的固定密钥；真实部署请让宿主注入 32 字节随机值。
 		HMACKey:    []byte("demo-only-hmac-key-please-replace"),
@@ -259,6 +261,15 @@ func main() {
 		log.Fatalf("user-center: %v", err)
 	}
 	defer func() { _ = instance.Close() }()
+
+	// 时区提示：邮件/页面里的时间按哪个时区显示。写错了不会有人报障，
+	// 只会被默默误解（"我中午登录的，怎么邮件写着凌晨 4 点"），所以启动就打出来。
+	if loc := instance.DisplayTimeZone(); loc != nil {
+		log.Printf("时间显示时区: %s（现在是 %s）", loc, time.Now().In(loc).Format("2006-01-02 15:04:05 -07:00"))
+		if loc == time.UTC {
+			log.Printf("提示：当前按 UTC 显示时间；若你在东八区，请用 -tz Asia/Shanghai（或给宿主机设置 TZ）")
+		}
+	}
 
 	// 引导结果：管理员是谁、是否已设置用户名、本次是否发了"设置用户名"的邮件
 	if res := instance.BootstrapResult(); res != nil && res.Email != "" {

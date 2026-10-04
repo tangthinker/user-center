@@ -325,7 +325,10 @@ func (a *App) Logout(ctx context.Context, token string) error {
 
 // InviteView 是邀请落地页需要的只读信息。
 type InviteView struct {
-	Email     string
+	Email string
+	// ExpiresAt 是**已经格式化好**的失效时刻，按 Config.TimeZone 显示并带上 UTC 偏移。
+	// 落地页是服务端渲染的，拿不到浏览器时区，因此这里只能用配置的时区；
+	// 关键是别再把 UTC 不加标记地写出来（那会被读成".本地时间"）。
 	ExpiresAt string
 	NeedsUID  bool
 	// AlreadyActive 表示账号已是可用状态，本次只是补一个用户名
@@ -344,7 +347,7 @@ func (a *App) GetInvite(ctx context.Context, token string) (*InviteView, error) 
 	}
 	return &InviteView{
 		Email:         u.Email,
-		ExpiresAt:     inv.ExpiresAt.UTC().Format("2006-01-02 15:04"),
+		ExpiresAt:     a.DisplayTime(inv.ExpiresAt, "2006-01-02 15:04 -07:00"),
 		NeedsUID:      u.UID == nil,
 		AlreadyActive: u.Status == domain.UserStatusActive,
 	}, nil

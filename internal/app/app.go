@@ -73,6 +73,11 @@ type Config struct {
 	InvitePath string
 	// SupportEmail 可选，出现在邮件正文中。
 	SupportEmail string
+	// TimeZone 是"给人看的时间"所用时区（IANA 名，如 "Asia/Shanghai"）。
+	//
+	// 留空表示跟随宿主进程的本地时区。库内存储与比较始终是 UTC，
+	// 这里只影响邮件正文与落地页上的那一行文字（见 mail.RendererConfig.TimeZone）。
+	TimeZone string
 	// BootstrapAdminEmail 非空时，在库内尚无管理员的情况下把它建成管理员。
 	BootstrapAdminEmail string
 
@@ -133,6 +138,9 @@ type App struct {
 	outbox   *mail.Outbox
 	renderer mail.Renderer
 	db       *gorm.DB
+
+	// loc 是"给人看的时间"所用时区；loc 为 nil 时按宿主本地时区处理。
+	loc *time.Location
 }
 
 // New 构造用例层。mailer 为 nil 时表示"不发送邮件"（例如只读演练）。
@@ -167,10 +175,14 @@ func New(st *store.Store, mailer mail.Mailer, cfg Config) (*App, error) {
 		PublicBaseURL: cfg.PublicBaseURL,
 		InvitePath:    cfg.InvitePath,
 		SupportEmail:  cfg.SupportEmail,
+		TimeZone:      cfg.TimeZone,
 	})
 	if err != nil {
 		return nil, err
 	}
+	// 展示用时区与邮件渲染器共用同一份解析结果，避免"邮件显示的时区"和
+	// "落地页/接口显示的时区"各说各话。
+	displayLoc := renderer.Location()
 
 	var outbox *mail.Outbox
 	if mailer != nil {
@@ -193,6 +205,7 @@ func New(st *store.Store, mailer mail.Mailer, cfg Config) (*App, error) {
 		audits:   audit.New(st.DB()).WithClock(cfg.Now),
 		outbox:   outbox,
 		renderer: renderer,
+		loc:      displayLoc,
 	}
 	return a, nil
 }
@@ -217,6 +230,29 @@ func (a *App) Outbox() *mail.Outbox { return a.outbox }
 
 // Now 返回编排层时钟的当前时间。
 func (a *App) Now() time.Time { return a.cfg.Now().UTC() }
+
+// DisplayTime 把时间渲染成给人看的字符串：按配置的时区显示，并带上 UTC 偏移。
+//
+// 与邮件正文用的是同一套规则（layout 见调用方），避免"邮件里是 12:13、页面上是
+// 04:13"这种同一件事两种说法。库内存储与比较始终是 UTC，这里只负责显示。
+func (a *App) DisplayTime(t time.Time, layout string) string {
+	if t.IsZero() {
+		return ""
+	}
+	loc := a.loc
+	if loc == nil {
+		loc = time.Local
+	}
+	return t.In(loc).Format(layout)
+}
+
+// DisplayLocation 返回展示用时区（供宿主日志提示"现在是按哪个时区显示"）。
+func (a *App) DisplayLocation() *time.Location {
+	if a.loc == nil {
+		return time.Local
+	}
+	return a.loc
+}
 
 // BootstrapResult 描述引导管理员这一步实际做了什么，便于宿主记录或提示运维。
 type BootstrapResult struct {
