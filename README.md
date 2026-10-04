@@ -159,14 +159,14 @@ var emailAccount = emailSettings{
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/admin/users` | 用户列表 |
+| GET | `/admin/users` | 用户列表（每行带 `online_devices`：在线设备数） |
 | POST | `/admin/users` | `{email}` → 建用户并发送邀请，返回 `invite_url` |
 | POST | `/admin/users/:id/invite/resend` | 重发邀请（旧链接立即失效） |
 | POST | `/admin/users/:id/invite/link` | **重新生成**链接供复制（不发邮件，提示旧链接失效） |
 | POST | `/admin/users/:id/disable` / `enable` | 停用（同时吊销全部会话）/ 启用 |
 | POST | `/admin/users/:id/email` | 改邮箱（通知旧地址 + 吊销全部会话） |
 | POST | `/admin/users/:id/sessions/revoke` | 踢下线 |
-| GET | `/admin/users/:id/sessions` | 会话列表 |
+| GET | `/admin/users/:id/sessions` | **在线设备**：按设备指纹归并，含类型 / 型号 / 系统 / 浏览器 / 登入时间 |
 | DELETE | `/admin/users/:id` | 删除用户 |
 | GET | `/admin/audit` | 审计（不返回 detail，避免误带内部字段） |
 | GET | `/admin/stats` | 用户/队列/发信量概览 |
@@ -199,9 +199,14 @@ uc.New(uc.Config{ /* … */ AppIcon: iconPNG })
 - 正文对比度：浅色 17.9:1、深色 14.7:1；控件描边 3.25:1（满足 WCAG 1.4.11）；
 - **界面自报家门**：标题、顶栏与首字标识都用宿主配置的 `ServiceName`——本库的常态是"每个宿主一套后台"，
   管理员要一眼看出自己在管哪一项服务；
+- **在线设备一目了然**：用户列表里每一位都显示"当前有几台在线设备"，点开是文件树式的设备清单——
+  类型（手机/平板/电脑/脚本客户端）、型号（`iPhone` / `Pixel 7` / `SM-G991B` / `Mac`）、系统与浏览器版本、
+  来源 IP、登入时间与最近活跃时间。设备信息由 UA 解析后落库，**原始 UA 永不保存**；
+  同一个客户端的多次登录会归并成一台设备（验证码登录每次都签发新会话，直接数会话会把"一台手机"说成"十台"）；
 - 键盘与读屏可用：显式焦点环、原生 `<form>` 回车提交、操作后**焦点自动回到原按钮**、
   行内按钮的 `aria-label` 带上目标邮箱（否则一行 6 个同名按钮无法区分）、
   取数时置 `aria-busy`、提示条可键盘关闭；破坏性操作走原生 `<dialog>`（有取消与后果说明）；
+  设备节点是可聚焦的按钮（`aria-expanded` + `aria-controls`），展开状态在刷新后保持不变；
 - 文字随系统字号缩放（字号与控件高度均为 `rem`，默认 16px 下与参考实现的 13px/30px 等价），窄屏重排到 320px。
 
 宿主若要自定义文案与品牌，替换自己的静态资源即可（`PublicHandler`/`AdminHandler` 只提供 JSON 接口与页面路由）。

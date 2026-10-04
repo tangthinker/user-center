@@ -290,7 +290,7 @@ func TestAdminScopeUsesShorterTTL(t *testing.T) {
 	}
 }
 
-func TestListForUserAndDeleteExpired(t *testing.T) {
+func TestListActiveDevicesAndDeleteExpired(t *testing.T) {
 	svc, db, clock := newService(t)
 	user := seedUser(t, db)
 	ctx := context.Background()
@@ -305,12 +305,17 @@ func TestListForUserAndDeleteExpired(t *testing.T) {
 	}
 	_ = old
 
-	list, err := svc.ListForUser(ctx, user.ID)
+	// 没有设备信息的两条会话必须归并成**一台**未知设备，而不是两台
+	// （验证码登录每次都签发新会话，直接按会话数显示就会把一台手机说成十台）。
+	devices, err := svc.ListActiveDevices(ctx, user.ID)
 	if err != nil {
-		t.Fatalf("ListForUser: %v", err)
+		t.Fatalf("ListActiveDevices: %v", err)
 	}
-	if len(list) != 2 {
-		t.Fatalf("ListForUser = %d sessions, want 2", len(list))
+	if len(devices) != 1 {
+		t.Fatalf("ListActiveDevices = %d devices, want 1", len(devices))
+	}
+	if devices[0].Sessions != 2 {
+		t.Fatalf("device sessions = %d, want 2", devices[0].Sessions)
 	}
 
 	// 越过绝对有效期后清理
@@ -443,5 +448,137 @@ func TestCustomRenewWindows(t *testing.T) {
 	}
 	if !after.Equal(before) {
 		t.Error("剩余 3 小时 > 阈值 2 小时，不应续期")
+	}
+}
+
+// 设备的聚合规则：同一设备重复登录算一台，不同设备/不同 scope 各算一台。
+func TestListActiveDevicesGroupsByFingerprint(t *testing.T) {
+	svc, db, clock := newService(t)
+	user := seedUser(t, db)
+	ctx := context.Background()
+
+	phone := session.DeviceInfo{ID: "fp-phone", Type: "mobile", Model: "iPhone", OS: "iOS 17.5", Browser: "Safari 17.5"}
+	laptop := session.DeviceInfo{ID: "fp-laptop", Type: "desktop", Model: "Mac", OS: "macOS", Browser: "Chrome 126"}
+
+	issue := func(scope, ip string, dev session.DeviceInfo) {
+		t.Helper()
+		if _, err := svc.Issue(ctx, session.IssueParams{
+			UserID: user.ID, UID: "alice", Scope: scope, IP: ip, Device: dev,
+		}); err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		// 让下次签发的 issued_at 严格变晚，聚合里的"最近登入"才有区分度
+		clock.Advance(time.Minute)
+	}
+
+	issue(domain.ScopeUser, "1.1.1.1", phone)
+	issue(domain.ScopeUser, "1.1.1.2", phone) // 同一台手机换了网络、又登录了一次
+	issue(domain.ScopeUser, "2.2.2.2", laptop)
+	issue(domain.ScopeAdmin, "1.1.1.1", phone) // 同一台手机上的管理会话：另一个 scope
+
+	devices, err := svc.ListActiveDevices(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("ListActiveDevices: %v", err)
+	}
+	if len(devices) != 3 {
+		t.Fatalf("devices = %d, want 3（手机 1 台 + 电脑 1 台 + 管理会话 1 台）", len(devices))
+	}
+
+	// 最新登入的排在最前（管理会话是最后签发的）
+	if devices[0].Scope != domain.ScopeAdmin {
+		t.Fatalf("first device scope = %q, want admin", devices[0].Scope)
+	}
+
+	var phoneDevice *session.ActiveDevice
+	for i := range devices {
+		if devices[i].DeviceID == "fp-phone" && devices[i].Scope == domain.ScopeUser {
+			phoneDevice = &devices[i]
+		}
+	}
+	if phoneDevice == nil {
+		t.Fatal("找不到那台手机")
+	}
+	if phoneDevice.Sessions != 2 {
+		t.Errorf("手机上的会话数 = %d, want 2", phoneDevice.Sessions)
+	}
+	// IP 取最近一次会话的地址，而不是第一次的
+	if phoneDevice.IP != "1.1.1.2" {
+		t.Errorf("IP = %q, want 1.1.1.2（最近一次会话）", phoneDevice.IP)
+	}
+	if phoneDevice.Model != "iPhone" || phoneDevice.OS != "iOS 17.5" {
+		t.Errorf("展示字段丢失：%+v", phoneDevice)
+	}
+	if !phoneDevice.FirstLoginAt.Before(phoneDevice.LoginAt) {
+		t.Errorf("FirstLoginAt (%v) 应早于 LoginAt (%v)", phoneDevice.FirstLoginAt, phoneDevice.LoginAt)
+	}
+
+	// 列表与计数必须一致：界面上的徽标与展开后的行数不能对不上
+	counts, err := svc.CountActiveDevicesByUsers(ctx, []int64{user.ID})
+	if err != nil {
+		t.Fatalf("CountActiveDevicesByUsers: %v", err)
+	}
+	if counts[user.ID] != len(devices) {
+		t.Fatalf("counts = %d, devices = %d", counts[user.ID], len(devices))
+	}
+}
+
+// "在线"必须排除已过期与已吊销的会话：会话是按需清理的，库里可能躺着
+// 早就闲置过期的行。
+func TestListActiveDevicesExcludesInactive(t *testing.T) {
+	svc, db, clock := newService(t)
+	user := seedUser(t, db)
+	ctx := context.Background()
+
+	dev := session.DeviceInfo{ID: "fp-phone", Type: "mobile", Model: "iPhone"}
+	if _, err := svc.Issue(ctx, session.IssueParams{UserID: user.ID, UID: "alice", Device: dev}); err != nil {
+		t.Fatal(err)
+	}
+	revoked, err := svc.Issue(ctx, session.IssueParams{UserID: user.ID, UID: "alice", Device: session.DeviceInfo{ID: "fp-old"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.Revoke(ctx, revoked.Plain, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// 第一条只越过 idle 有效期（绝对有效期尚未到）：它必须被视为"不在线"
+	clock.Advance(testIdle + time.Hour)
+
+	live, err := svc.Issue(ctx, session.IssueParams{UserID: user.ID, UID: "alice", Device: dev})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var raw int
+	if err := db.Raw(`SELECT COUNT(*) FROM sessions`).Row().Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if raw != 3 {
+		t.Fatalf("库里的会话数 = %d, want 3（过期/已吊销的行仍在，只是不算在线）", raw)
+	}
+
+	devices, err := svc.ListActiveDevices(ctx, user.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("在线设备 = %d, want 1（只有最后一条还活着）", len(devices))
+	}
+	if devices[0].Sessions != 1 {
+		t.Errorf("会话数 = %d, want 1", devices[0].Sessions)
+	}
+	if _, err := svc.Verify(ctx, live.Plain); err != nil {
+		t.Errorf("最后一条会话必须仍然有效：%v", err)
+	}
+}
+
+func TestCountActiveDevicesByUsersEmptyInput(t *testing.T) {
+	svc, _, _ := newService(t)
+	counts, err := svc.CountActiveDevicesByUsers(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("空列表不该报错：%v", err)
+	}
+	if len(counts) != 0 {
+		t.Fatalf("counts = %v, want 空", counts)
 	}
 }

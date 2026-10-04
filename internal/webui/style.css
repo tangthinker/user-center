@@ -201,7 +201,10 @@ a { color: var(--accent-text); }
 .content { max-width: 900px; margin: 0 auto; padding: 20px 20px 72px; display: flex; flex-direction: column; gap: 20px; }
 
 /* 分组：对应参考实现的 .group */
-.section { display: flex; flex-direction: column; gap: 7px; }
+/* min-width:0 是必需的：.content 是 flex 列容器，而 flex 项的 min-width 默认是
+   auto ⇒ 表格的最小宽度会把整块内容顶得比视口还宽，横向滚动条永远不会出现，
+   只有 overflow:hidden 在默默裁掉右边的操作按钮。 */
+.section { display: flex; flex-direction: column; gap: 7px; min-width: 0; }
 .section__head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 0 2px; }
 .section__title { font-size: var(--fs-base); font-weight: 600; }
 .section__note { font-size: var(--fs-tiny); color: var(--label-2); }
@@ -293,6 +296,9 @@ input[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px var(--danger-soft); }
 .chip--admin { background: var(--accent-soft); color: var(--accent-text); }
 
 /* —— 表格（用户名单 / 审计）—— */
+/* 表格外面套一层可横向滚动的壳：分组容器是 overflow:hidden，
+   窄屏下操作按钮会被静默裁掉（看得见一半比看不见更糟）。 */
+.table-scroll { overflow-x: auto; }
 .table { width: 100%; border-collapse: collapse; font-size: var(--fs-base); }
 .table th {
   padding: 7px 12px;
@@ -311,6 +317,77 @@ input[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px var(--danger-soft); }
 .cell-user__meta { display: flex; gap: 8px; flex-wrap: wrap; font-size: var(--fs-tiny); color: var(--label-2); }
 .row-actions { display: inline-flex; gap: 2px; justify-content: flex-end; flex-wrap: wrap; }
 .col-actions { text-align: right; }
+
+/* ============================================================================
+ * 在线设备：文件树式展开
+ *
+ * 一个用户 = 一个可展开的节点，展开后每台设备是一片叶子（竖线 + 拐角）。
+ * 之所以按**设备**聚合而不是列出会话：验证码登录每次都会签发新会话且不吊销
+ * 旧的，直接列会话会把"一台手机"显示成"十台设备"。
+ * ========================================================================== */
+.devices-toggle {
+  display: inline-flex; align-items: center; gap: 6px;
+  height: var(--h-tap); padding: 0 8px;
+  border: none; border-radius: var(--radius-control);
+  background: transparent; color: var(--label);
+  font: inherit; font-size: var(--fs-base); font-variant-numeric: tabular-nums;
+  white-space: nowrap;   /* "3 台"不能被折成两行 */
+  cursor: pointer;
+  transition: background 0.14s var(--ease);
+}
+.devices-toggle:hover { background: var(--bg-hover); }
+.devices-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+/* 展开箭头用 CSS 画：不引入图标字体，也不赌某个 emoji 的可用性 */
+.devices-toggle__caret {
+  width: 0; height: 0; flex: none;
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transition: transform 0.14s var(--ease);
+}
+.devices-toggle[aria-expanded="true"] .devices-toggle__caret { transform: rotate(90deg); }
+.devices-toggle--none { color: var(--label-2); cursor: default; }
+.devices-toggle--none:hover { background: transparent; }
+
+/* 树形行自带底色，把"这些是某个用户的设备"在视觉上收进去 */
+.devices-row > td { background: var(--bg-row-alt); padding: 0 12px 10px; }
+.devices-panel { padding: 2px 0 0 6px; }
+
+/* 竖线与拐角都由节点自己画（而不是给 <ul> 加 border-left）：
+  第一项之上不会多出一截，最后一项也能干净地停在拐角处——
+  既不需要用行底色去遮（那样一 hover 就露馅），也不怕底色变化。 */
+.devtree { list-style: none; margin: 0; padding: 0 0 0 20px; }
+.devtree__node { position: relative; padding: 8px 0; }
+.devtree__node::before {
+  content: ""; position: absolute; left: -20px; top: 0; bottom: 0; width: 1px;
+  background: var(--separator-strong);
+}
+.devtree__node:last-child::before { bottom: auto; height: 18px; }
+.devtree__node::after {
+  content: ""; position: absolute; left: -20px; top: 18px; width: 14px; height: 1px;
+  background: var(--separator-strong);
+}
+
+.device { display: flex; align-items: flex-start; gap: 9px; min-width: 0; }
+.device__icon { width: 20px; height: 20px; flex: none; display: grid; place-items: center; margin-top: 1px; }
+.device__icon::before {
+  content: ""; border: 1.5px solid var(--label-2); border-radius: 2px;
+  background: var(--bg-quaternary);
+}
+.device__icon[data-type="mobile"]::before { width: 9px; height: 15px; border-radius: 2.5px; }
+.device__icon[data-type="tablet"]::before { width: 13px; height: 15px; border-radius: 2.5px; }
+.device__icon[data-type="desktop"]::before { width: 17px; height: 11px; border-radius: 2px; }
+.device__icon[data-type="bot"]::before { width: 13px; height: 11px; border-radius: 3px; }
+.device__icon[data-type="unknown"]::before {
+  width: 14px; height: 14px; border-radius: 50%; border-style: dashed; background: transparent;
+}
+.device__body { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.device__line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.device__model { font-weight: 500; overflow-wrap: anywhere; }
+.device__meta { font-size: var(--fs-tiny); color: var(--label-2); overflow-wrap: anywhere; }
+.devices-panel__foot {
+  margin: 6px 0 0 20px;
+  font-size: var(--fs-tiny); line-height: 1.5; color: var(--label-2);
+}
 
 /* —— 概览数字 —— */
 .stats { display: flex; gap: 28px; flex-wrap: wrap; padding: 14px; }
@@ -470,7 +547,12 @@ input[aria-invalid="true"]:focus { box-shadow: 0 0 0 3px var(--danger-soft); }
   .form-row > .field { flex: 1 1 100%; }
   .form-row > .btn { width: 100%; }
   .stats { gap: 18px; }
-  .table th:nth-child(4), .table td:nth-child(4) { display: none; } /* 窄屏收起"最近登录" */
+  /* 窄屏只留"用户 / 在线设备 / 操作"三列（在线设备是这一屏的主角，不能收） */
+  #users-table th:nth-child(2), #users-table td:nth-child(2),
+  #users-table th:nth-child(3), #users-table td:nth-child(3),
+  #users-table th:nth-child(4), #users-table td:nth-child(4) { display: none; }
+  /* 6 列的表在 420px 里放不下是事实，与其把按钮压成两行，不如让它横向滚动：
+     操作按钮本来就有 6 个，硬塞只会挤成一个都不好点。 */
   .col-actions { text-align: left; }
 }
 

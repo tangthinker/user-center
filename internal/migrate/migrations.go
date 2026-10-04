@@ -128,4 +128,19 @@ var migrations = []Migration{
 			`CREATE INDEX IF NOT EXISTS ix_audit_created ON admin_audit(created_at)`,
 		},
 	},
+	{
+		Version: 2,
+		Name:    "session_device",
+		Statements: []string{
+			// ---------- 会话的设备指纹 ----------
+			// 全部可空：历史会话没有这些信息，读出来就是"未知设备"，不需要回填。
+			// device_id 是**不含版本号**的设备指纹的加盐哈希（见 internal/device）：
+			// 浏览器/系统升级不得凭空多出一台设备，而同一客户端的重复登录必须归并。
+			`ALTER TABLE sessions ADD COLUMN device_id      TEXT NULL`,
+			`ALTER TABLE sessions ADD COLUMN device_type    TEXT NULL`,
+			`ALTER TABLE sessions ADD COLUMN device_model   TEXT NULL`,
+			`ALTER TABLE sessions ADD COLUMN device_os      TEXT NULL`,
+			`ALTER TABLE sessions ADD COLUMN device_browser TEXT NULL`,
+		},
+	},
 }

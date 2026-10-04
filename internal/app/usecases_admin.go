@@ -10,6 +10,7 @@ import (
 	"github.com/tangthinker/user-center/v2/internal/domain"
 	"github.com/tangthinker/user-center/v2/internal/invite"
 	"github.com/tangthinker/user-center/v2/internal/mail"
+	"github.com/tangthinker/user-center/v2/internal/session"
 	"github.com/tangthinker/user-center/v2/internal/store"
 	"github.com/tangthinker/user-center/v2/internal/user"
 	"gorm.io/gorm"
@@ -335,17 +336,25 @@ func (a *App) AdminRevokeSessions(ctx context.Context, actor Actor, userID int64
 	return n, nil
 }
 
-// AdminListSessions 返回某用户的活跃会话。
+// AdminListSessions 返回某用户的**在线设备**（同一设备的多次登录已归并）。
 //
 // 用户不存在时返回 ErrNotFound（而不是一个空列表），让接口层的 404 语义准确。
-func (a *App) AdminListSessions(ctx context.Context, _ Actor, userID int64) ([]domain.Session, error) {
+func (a *App) AdminListSessions(ctx context.Context, _ Actor, userID int64) ([]session.ActiveDevice, error) {
 	if _, err := a.users.GetByID(ctx, userID); err != nil {
 		if errors.Is(err, user.ErrNotFound) {
 			return nil, ErrNotFound
 		}
 		return nil, err
 	}
-	return a.sessions.ListForUser(ctx, userID)
+	return a.sessions.ListActiveDevices(ctx, userID)
+}
+
+// AdminOnlineDeviceCounts 返回一批用户各自的在线设备数（用户列表的徽标用）。
+//
+// 单列一个方法而不是塞进 AdminListUsers：列表接口的返回形状是宿主的公开契约，
+// 设备数只在管理界面上用，不该改变它的签名。
+func (a *App) AdminOnlineDeviceCounts(ctx context.Context, userIDs []int64) (map[int64]int, error) {
+	return a.sessions.CountActiveDevicesByUsers(ctx, userIDs)
 }
 
 // AdminDeleteUser 删除用户（级联删除其邀请与会话）。

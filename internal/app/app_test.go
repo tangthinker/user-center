@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -1126,4 +1127,94 @@ func uidAndStatus(t *testing.T, db *gorm.DB, email string) (string, string) {
 		return "", status
 	}
 	return *uid, status
+}
+
+// 设备信息落库的两条硬约束：
+//  1. UA 原文**绝不落库**（本库只存不可逆摘要，见 §5.4）；
+//  2. device_id 必须是加盐哈希，不能是可读的指纹原像（否则磁盘上就多了一个
+//     可跨库比对的设备标识）。
+func TestLoginRecordsDeviceWithoutRawUA(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	email := seedActiveUser(t, h)
+
+	const ua = `Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1`
+
+	login := func(userAgent string) {
+		t.Helper()
+		if _, err := h.app.RequestLoginCode(ctx, email, "1.1.1.1"); err != nil {
+			t.Fatal(err)
+		}
+		code := otpCodeFromOutbox(t, h.db, email)
+		if _, err := h.app.VerifyLoginCode(ctx, email, code, "1.1.1.1", userAgent); err != nil {
+			t.Fatal(err)
+		}
+	}
+	login(ua)
+	login(ua)
+
+	type row struct {
+		DeviceID      string
+		DeviceType    string
+		DeviceModel   string
+		DeviceOS      string
+		DeviceBrowser string
+		UAHash        string
+	}
+	var rows []row
+	if err := h.db.Raw(`SELECT COALESCE(device_id,'') AS device_id, COALESCE(device_type,'') AS device_type,
+			COALESCE(device_model,'') AS device_model, COALESCE(device_os,'') AS device_os,
+			COALESCE(device_browser,'') AS device_browser, COALESCE(ua_hash,'') AS ua_hash
+		FROM sessions ORDER BY issued_at`).Scan(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("会话数 = %d, want 2", len(rows))
+	}
+	first := rows[0]
+	if first.DeviceType != "mobile" || first.DeviceModel != "iPhone" ||
+		first.DeviceOS != "iOS 17.5" || first.DeviceBrowser != "Safari 17.5" {
+		t.Fatalf("设备字段没有落库：%+v", first)
+	}
+	// 同一台设备两次登录必须得到同一个指纹（否则"设备数"会随登录次数增长）
+	if rows[0].DeviceID == "" || rows[0].DeviceID != rows[1].DeviceID {
+		t.Fatalf("设备指纹不稳定：%q vs %q", rows[0].DeviceID, rows[1].DeviceID)
+	}
+	if strings.Contains(strings.ToLower(first.DeviceID), "iphone") {
+		t.Fatalf("device_id 看起来是原像而不是哈希：%q", first.DeviceID)
+	}
+
+	// UA 原文不得出现在任何一列里（LIKE 在 SQLite 里对 ASCII 大小写不敏感）
+	var leaked int
+	if err := h.db.Raw(`SELECT COUNT(*) FROM sessions
+		WHERE device_id LIKE ? OR ua_hash LIKE ? OR device_model LIKE ?`,
+		"%Mozilla%", "%AppleWebKit%", "%Safari/604.1%").Row().Scan(&leaked); err != nil {
+		t.Fatal(err)
+	}
+	if leaked != 0 {
+		t.Fatal("会话表里出现了 UA 原文")
+	}
+}
+
+// 认不出来的 UA 不能编造设备：device_id 留空（NULL），与旧数据同归"未知设备"。
+func TestUnrecognizedUALeavesDeviceUnknown(t *testing.T) {
+	h := newHarness(t, nil)
+	ctx := context.Background()
+	email := seedActiveUser(t, h)
+
+	if _, err := h.app.RequestLoginCode(ctx, email, "1.1.1.1"); err != nil {
+		t.Fatal(err)
+	}
+	code := otpCodeFromOutbox(t, h.db, email)
+	if _, err := h.app.VerifyLoginCode(ctx, email, code, "1.1.1.1", "totally-unknown-client"); err != nil {
+		t.Fatal(err)
+	}
+
+	var deviceID *string
+	if err := h.db.Raw(`SELECT device_id FROM sessions LIMIT 1`).Row().Scan(&deviceID); err != nil {
+		t.Fatal(err)
+	}
+	if deviceID != nil {
+		t.Fatalf("认不出来的 UA 不该产生 device_id，得到 %q", *deviceID)
+	}
 }

@@ -241,6 +241,7 @@
   // 渲染完成后把焦点还回去——否则键盘用户每做一次操作就得从头 Tab。
   function refreshAll(focus) {
     if (focus) pendingFocus = { user: String(focus.user), action: focus.action };
+    invalidateDevices();   // 任何动作之后设备都可能变了，缓存一律作废
     loadStats();
     loadUsers();
     loadAudit();
@@ -314,9 +315,11 @@
 
       var table = document.createElement('table');
       table.className = 'table';
+      // id 供窄屏样式精确收起列：.table 是共享类，按列号全局隐藏会误伤审计表
+      table.id = 'users-table';
       var thead = document.createElement('thead');
       var headRow = document.createElement('tr');
-      [['用户', ''], ['用户名', ''], ['状态', ''], ['最近登录', ''], ['操作', 'col-actions']].forEach(function (col) {
+      [['用户', ''], ['用户名', ''], ['状态', ''], ['最近登录', ''], ['在线设备', ''], ['操作', 'col-actions']].forEach(function (col) {
         var th = document.createElement('th');
         th.textContent = col[0];
         if (col[1]) th.className = col[1];
@@ -328,8 +331,10 @@
       var tbody = document.createElement('tbody');
       list.forEach(function (u) { tbody.appendChild(userRow(u)); });
       table.appendChild(tbody);
-      box.appendChild(table);
+      box.appendChild(tableScroll(table));
       restoreFocus();
+      // 刷新不该把用户展开的设备收起来：按记录的状态重建（数据走缓存/重取）
+      list.forEach(syncDevicesRow);
     }).catch(function () {
       container.removeAttribute('aria-busy');
     });
@@ -337,6 +342,7 @@
 
   function userRow(u) {
     var tr = document.createElement('tr');
+    tr.id = 'user-' + u.id;
 
     // 第一格：邮箱 + 状态徽标（徽标带文字，不靠颜色单独表达）
     var tdUser = document.createElement('td');
@@ -369,6 +375,11 @@
     tdLast.className = 'num';
     tdLast.textContent = u.last_login_at ? shortTime(u.last_login_at) : '从未登录';
     tr.appendChild(tdLast);
+
+    // 第五格：在线设备（文件树式展开的节点）
+    var tdDevices = document.createElement('td');
+    tdDevices.appendChild(devicesToggle(u));
+    tr.appendChild(tdDevices);
 
     var actions = document.createElement('div');
     actions.className = 'row-actions';
@@ -517,6 +528,182 @@
   }
 
 
+  /* ---------- 在线设备（文件树式展开） ----------
+   *
+   * 数据形状：服务端已按 (scope, 设备指纹) 把会话归并成"设备"。前端**不再**按
+   * 会话数计算，否则"一台手机登录十次"就会显示成十台设备。
+   * 展开状态与取回的设备都留在内存里：整表刷新后要能原样恢复。
+   */
+
+  var DEVICE_TYPE_LABEL = { mobile: '手机', tablet: '平板', desktop: '电脑', bot: '脚本客户端', unknown: '未知设备' };
+
+  var deviceCache = {};    // userID -> { items: [...] } 或 { error: '文案' }
+  var expandedUsers = {};  // userID -> true
+
+  function invalidateDevices() { deviceCache = {}; }
+
+  // syncDevicesRow 让某一行的展开状态与数据一致；整表渲染完成后逐行调用。
+  function syncDevicesRow(u) {
+    var tr = el('user-' + u.id);
+    if (!tr) return;
+    var toggle = tr.querySelector('[data-action="devices"]');
+    if (!toggle) {
+      // 0 台设备：没有可展开的内容，残留的详情行也要清掉
+      var stale = el('devices-' + u.id);
+      if (stale) stale.parentNode.removeChild(stale);
+      return;
+    }
+
+    var open = !!expandedUsers[u.id];
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+
+    var detail = el('devices-' + u.id);
+    if (!detail) {
+      detail = document.createElement('tr');
+      detail.className = 'devices-row';
+      detail.id = 'devices-' + u.id;
+      var cell = document.createElement('td');
+      cell.colSpan = 6;
+      detail.appendChild(cell);
+      tr.parentNode.insertBefore(detail, tr.nextSibling);
+    }
+    detail.hidden = !open;
+    if (open) fillDevicesPanel(detail.firstChild, u);
+  }
+
+  // devicesToggle 是"在线设备"这一格：台数 + 展开箭头。0 台时是不可点的占位。
+  function devicesToggle(u) {
+    var count = u.online_devices || 0;
+    var open = !!expandedUsers[u.id];
+
+    if (!count) {
+      var none = document.createElement('span');
+      none.className = 'devices-toggle devices-toggle--none';
+      none.textContent = '—';
+      none.setAttribute('title', '当前没有在线设备');
+      return none;
+    }
+
+    var button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'devices-toggle';
+    button.setAttribute('aria-expanded', open ? 'true' : 'false');
+    button.setAttribute('aria-controls', 'devices-' + u.id);
+    button.setAttribute('aria-label', '在线设备 ' + count + ' 台，' + (open ? '收起' : '展开') + '：' + u.email);
+    // data-user / data-action 让重渲染后的焦点还回这个按钮（见 restoreFocus）
+    button.setAttribute('data-user', String(u.id));
+    button.setAttribute('data-action', 'devices');
+
+    var caret = document.createElement('span');
+    caret.className = 'devices-toggle__caret';
+    caret.setAttribute('aria-hidden', 'true');
+    button.appendChild(caret);
+
+    var label = document.createElement('span');
+    label.textContent = count + ' 台';
+    button.appendChild(label);
+
+    button.addEventListener('click', function () {
+      if (expandedUsers[u.id]) { delete expandedUsers[u.id]; }
+      else { expandedUsers[u.id] = true; }
+      syncDevicesRow(u);
+    });
+    return button;
+  }
+
+  function fillDevicesPanel(cell, u) {
+    var cached = deviceCache[u.id];
+    cell.textContent = '';
+
+    if (cached && cached.error) {
+      cell.appendChild(panelNote(cached.error));
+      return;
+    }
+    if (cached) {
+      renderDevices(cell, cached.items);
+      return;
+    }
+
+    cell.appendChild(panelNote('正在读取设备…'));
+    request('GET', '/users/' + u.id + '/sessions').then(function (res) {
+      if (res.status === 401) { toast('登录状态已失效，请刷新页面重新登录', 'err'); return; }
+      if (res.status !== 200 || res.data.code !== 0) {
+        deviceCache[u.id] = { error: messageOf(res, '读取设备失败') };
+      } else {
+        deviceCache[u.id] = { items: (res.data.data && res.data.data.devices) || [] };
+      }
+      // 请求回来时这一行可能已经收起、或整表已被重渲染：只填还挂在页面上的单元格
+      if (!expandedUsers[u.id] || !document.body.contains(cell)) return;
+      fillDevicesPanel(cell, u);
+    }).catch(function () {
+      deviceCache[u.id] = { error: '网络异常，无法读取设备' };
+      if (document.body.contains(cell)) fillDevicesPanel(cell, u);
+    });
+  }
+
+  function renderDevices(cell, items) {
+    if (!items.length) {
+      cell.appendChild(panelNote('当前没有在线设备：该用户未登录，或登录状态已被吊销。'));
+      return;
+    }
+    var tree = document.createElement('ul');
+    tree.className = 'devtree';
+    items.forEach(function (d) { tree.appendChild(deviceNode(d)); });
+    cell.appendChild(tree);
+  }
+
+  function deviceNode(d) {
+    var li = document.createElement('li');
+    li.className = 'devtree__node';
+
+    var icon = document.createElement('span');
+    icon.className = 'device__icon';
+    icon.setAttribute('data-type', d.type || 'unknown');
+    icon.setAttribute('aria-hidden', 'true');
+
+    var body = document.createElement('div');
+    body.className = 'device__body';
+
+    var line = document.createElement('div');
+    line.className = 'device__line';
+    var model = document.createElement('span');
+    model.className = 'device__model';
+    model.textContent = d.model || '未知设备';
+    line.appendChild(model);
+    line.appendChild(chip(DEVICE_TYPE_LABEL[d.type] || '未知设备', 'plain'));
+    // 管理会话与用户会话是两条独立记录，只有前者需要标注
+    if (d.scope === 'admin') line.appendChild(chip('管理后台', 'admin'));
+    body.appendChild(line);
+
+    var facts = [d.os, d.browser, d.ip].filter(function (v) { return !!v; });
+    if (facts.length) body.appendChild(metaLine(facts.join(' · ')));
+
+    var times = '登入 ' + shortTime(d.login_at) + ' · 最近活跃 ' + shortTime(d.last_seen);
+    body.appendChild(metaLine(times));
+
+    if (d.sessions > 1) {
+      body.appendChild(metaLine('共 ' + d.sessions + ' 次在线登录 · 最早 ' + shortTime(d.first_login_at)));
+    }
+
+    li.appendChild(icon);
+    li.appendChild(body);
+    return li;
+  }
+
+  function metaLine(text) {
+    var p = document.createElement('div');
+    p.className = 'device__meta';
+    p.textContent = text;
+    return p;
+  }
+
+  function panelNote(text) {
+    var p = document.createElement('p');
+    p.className = 'devices-panel__foot';
+    p.textContent = text;
+    return p;
+  }
+
   function loadAudit() {
     var container = el('audit');
     container.setAttribute('aria-busy', 'true');
@@ -569,7 +756,7 @@
         tbody.appendChild(tr);
       });
       table.appendChild(tbody);
-      box.appendChild(table);
+      box.appendChild(tableScroll(table));
     });
   }
 
@@ -730,6 +917,15 @@
     span.className = 'chip chip--' + kind;
     span.textContent = text;   // 状态永远带文字，不靠颜色单独表达
     return span;
+  }
+
+  // tableScroll 把表格放进可横向滚动的壳里：分组容器的 overflow:hidden 会直接
+  // 裁掉超宽的内容（窄屏下的操作按钮），而"被裁掉一半的按钮"比滚动条危险得多。
+  function tableScroll(table) {
+    var wrap = document.createElement('div');
+    wrap.className = 'table-scroll';
+    wrap.appendChild(table);
+    return wrap;
   }
 
   function pad(n) { return (n < 10 ? '0' : '') + n; }

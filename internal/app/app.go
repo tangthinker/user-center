@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/tangthinker/user-center/v2/internal/audit"
+	"github.com/tangthinker/user-center/v2/internal/device"
 	"github.com/tangthinker/user-center/v2/internal/domain"
 	"github.com/tangthinker/user-center/v2/internal/invite"
 	"github.com/tangthinker/user-center/v2/internal/mail"
@@ -410,6 +411,22 @@ func (a *App) hashUA(ua string) string {
 		return ""
 	}
 	sum := sha256.Sum256([]byte(a.cfg.UAHashSalt + "\x00" + ua))
+	return hex.EncodeToString(sum[:8])
+}
+
+// deviceID 把设备指纹原像摘要成 device_id。
+//
+// 与 hashUA 用不同的域前缀：两类摘要都落在同一个盐上，前缀不隔离就等于
+// 允许"拿审计里的 UA 摘要去比对设备指纹"这种荒唐事。
+//
+// 认不出来的设备返回空串（落库为 NULL），让它们与旧版本留下的 NULL
+// device_id 归成同一台"未知设备"，而不是各占一行。
+func (a *App) deviceID(info device.Info) string {
+	key := info.Key()
+	if key == device.KeyUnknown {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(a.cfg.UAHashSalt + "\x00device\x00" + key))
 	return hex.EncodeToString(sum[:8])
 }
 

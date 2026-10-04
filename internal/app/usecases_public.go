@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/tangthinker/user-center/v2/internal/audit"
+	"github.com/tangthinker/user-center/v2/internal/device"
 	"github.com/tangthinker/user-center/v2/internal/domain"
 	"github.com/tangthinker/user-center/v2/internal/invite"
 	"github.com/tangthinker/user-center/v2/internal/mail"
@@ -223,9 +224,17 @@ func (a *App) verifyCode(ctx context.Context, email, code, ip, ua string, admin 
 	}
 
 	result := &LoginResult{UID: u.UIDValue(), User: u}
+	dev := device.Parse(ua)
 	err = a.transact(ctx, func(tx *gorm.DB) error {
 		issued, err := a.sessions.WithTx(tx).Issue(ctx, session.IssueParams{
 			UserID: u.ID, UID: u.UIDValue(), Scope: scope, IP: ip, UAHash: a.hashUA(ua),
+			Device: session.DeviceInfo{
+				ID:      a.deviceID(dev),
+				Type:    dev.Type,
+				Model:   dev.Model,
+				OS:      dev.OS,
+				Browser: dev.Browser,
+			},
 		})
 		if err != nil {
 			return err

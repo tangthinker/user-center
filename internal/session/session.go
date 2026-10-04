@@ -133,6 +133,24 @@ type IssueParams struct {
 	Scope  string // domain.ScopeUser / domain.ScopeAdmin
 	IP     string
 	UAHash string
+	// Device 是签发时要一并落库的设备信息（由调用方解析 UA 后传入）。
+	//
+	// 零值表示"没有设备信息"：此时 device_id 记 NULL，读出来归入"未知设备"。
+	Device DeviceInfo
+}
+
+// DeviceInfo 是设备信息的**列形状**（与 sessions 表的 device_* 列一一对应）。
+//
+// 之所以不直接用 internal/device.Info：本包只关心"往哪些列里写什么"，
+// 解析规则属于上层，包的依赖方向保持不变。
+type DeviceInfo struct {
+	// ID 是**加盐哈希**后的设备指纹，空串表示未知（落库为 NULL）。
+	ID string
+	// Type / Model / OS / Browser 是给人看的展示字段。
+	Type    string
+	Model   string
+	OS      string
+	Browser string
 }
 
 // Issued 是签发结果。Plain 只在此处出现一次。
@@ -169,6 +187,11 @@ func (s *Service) Issue(ctx context.Context, p IssueParams) (*Issued, error) {
 		LastSeenAt:        now,
 		IP:                optString(p.IP),
 		UAHash:            optString(p.UAHash),
+		DeviceID:          optString(p.Device.ID),
+		DeviceType:        optString(p.Device.Type),
+		DeviceModel:       optString(p.Device.Model),
+		DeviceOS:          optString(p.Device.OS),
+		DeviceBrowser:     optString(p.Device.Browser),
 	}
 	if err := s.db.WithContext(ctx).Create(rec).Error; err != nil {
 		return nil, fmt.Errorf("session: create: %w", err)
@@ -282,17 +305,177 @@ func (s *Service) RevokeAllForUser(ctx context.Context, userID int64, reason str
 	return res.RowsAffected, nil
 }
 
-// ListForUser 返回某用户的全部未吊销会话，供管理界面展示。
-func (s *Service) ListForUser(ctx context.Context, userID int64) ([]domain.Session, error) {
-	var out []domain.Session
+// --- 在线设备 ---
+
+// ActiveDevice 是一台"在线设备"：同一 (scope, 设备指纹) 下所有活跃会话的聚合。
+//
+// 为什么必须按设备聚合、而不是把会话直接列出来：验证码登录每次都会签发**新**会话
+// 且不吊销旧的，同一个浏览器反复登录会攒出一串会话。直接列会话，界面上就会把
+// "一台手机"显示成"十台设备"——这是这个界面最容易骗人的地方。
+type ActiveDevice struct {
+	// DeviceID 是设备指纹的加盐哈希；旧数据与识别不出来的设备为空串。
+	DeviceID string
+	// Scope 区分用户会话与管理会话：同一台电脑上二者是两条独立记录。
+	Scope string
+	// Type / Model / OS / Browser 是展示字段，可能为空（历史会话没有）。
+	Type    string
+	Model   string
+	OS      string
+	Browser string
+	// IP 取该设备**最近一次**会话的来源地址（移动网络下会变，因此不参与聚合）。
+	IP string
+	// Sessions 是该设备当前仍有效的会话数（重复登录会累加）。
+	Sessions int
+	// LoginAt 是最近一次登入，FirstLoginAt 是这批在线会话里最早的一次。
+	LoginAt      time.Time
+	FirstLoginAt time.Time
+	// LastSeenAt / ExpiresAt 取该设备最新一条会话的值。
+	LastSeenAt time.Time
+	ExpiresAt  time.Time
+}
+
+// UnknownDeviceID 是"没有设备指纹"的会话在聚合时的归类键，
+// Go 侧的 groupDevices 与 SQL 侧的 COUNT(DISTINCT ...) 必须用同一个值。
+const UnknownDeviceID = "unknown"
+
+// activeSessionClause 是"此刻仍然在线"的唯一判据。
+//
+// 必须把 idle 过期也算进去：只判 revoked_at IS NULL 会把"早就闲置过期、
+// 只是还没被 DeleteExpired 清掉"的会话算成在线设备（会话是按需清理的）。
+const activeSessionClause = `revoked_at IS NULL AND idle_expires_at > ? AND absolute_expires_at > ?`
+
+// ListActiveDevices 返回某用户当前的在线设备（按最近登入时间倒序）。
+func (s *Service) ListActiveDevices(ctx context.Context, userID int64) ([]ActiveDevice, error) {
+	if userID == 0 {
+		return nil, errors.New("session: UserID is required")
+	}
+	now := s.now()
+	var rows []domain.Session
 	err := s.db.WithContext(ctx).
-		Where("user_id = ? AND revoked_at IS NULL", userID).
+		Where("user_id = ?", userID).
+		Where(activeSessionClause, now, now).
 		Order("issued_at DESC").
-		Find(&out).Error
+		Find(&rows).Error
 	if err != nil {
-		return nil, fmt.Errorf("session: list: %w", err)
+		return nil, fmt.Errorf("session: list active devices: %w", err)
+	}
+	return groupDevices(rows), nil
+}
+
+// CountActiveDevicesByUsers 返回一批用户各自的在线设备数（用于用户列表的徽标）。
+//
+// 一次分组查询解决：用户列表最多 500 行，逐行查询会是 N+1。
+func (s *Service) CountActiveDevicesByUsers(ctx context.Context, userIDs []int64) (map[int64]int, error) {
+	out := map[int64]int{}
+	ids := uniqueIDs(userIDs)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	now := s.now()
+
+	var rows []struct {
+		UserID  int64
+		Devices int
+	}
+	// 聚合键必须与 groupDevices 完全一致：scope + 设备指纹（NULL/空 → unknown）。
+	err := s.db.WithContext(ctx).
+		Model(&domain.Session{}).
+		Select(`user_id, COUNT(DISTINCT scope || ':' || COALESCE(NULLIF(device_id, ''), ?)) AS devices`, UnknownDeviceID).
+		Where("user_id IN ?", ids).
+		Where(activeSessionClause, now, now).
+		Group("user_id").
+		Scan(&rows).Error
+	if err != nil {
+		return nil, fmt.Errorf("session: count active devices: %w", err)
+	}
+	for _, row := range rows {
+		out[row.UserID] = row.Devices
 	}
 	return out, nil
+}
+
+// groupDevices 把同一用户的活跃会话按 (scope, 设备指纹) 聚合。
+//
+// rows 必须按 issued_at 倒序：每组的第一行就是最新的那条会话，展示字段与 IP
+// 以它为准；更早的会话只在字段为空时补位（历史数据进行过迁移，可能没有设备字段）。
+func groupDevices(rows []domain.Session) []ActiveDevice {
+	out := make([]ActiveDevice, 0, len(rows))
+	index := make(map[string]int, len(rows))
+
+	for _, r := range rows {
+		key := r.Scope + ":" + deviceKeyOf(r)
+		at, ok := index[key]
+		if !ok {
+			out = append(out, ActiveDevice{
+				DeviceID:     derefString(r.DeviceID),
+				Scope:        r.Scope,
+				Type:         derefString(r.DeviceType),
+				Model:        derefString(r.DeviceModel),
+				OS:           derefString(r.DeviceOS),
+				Browser:      derefString(r.DeviceBrowser),
+				IP:           derefString(r.IP),
+				LoginAt:      r.IssuedAt,
+				FirstLoginAt: r.IssuedAt,
+				LastSeenAt:   r.LastSeenAt,
+				ExpiresAt:    r.IdleExpiresAt,
+			})
+			at = len(out) - 1
+			index[key] = at
+		}
+		d := &out[at]
+		d.Sessions++
+		if r.IssuedAt.Before(d.FirstLoginAt) {
+			d.FirstLoginAt = r.IssuedAt
+		}
+		if r.IssuedAt.After(d.LoginAt) {
+			d.LoginAt = r.IssuedAt
+		}
+		if r.LastSeenAt.After(d.LastSeenAt) {
+			d.LastSeenAt = r.LastSeenAt
+		}
+		if r.IdleExpiresAt.After(d.ExpiresAt) {
+			d.ExpiresAt = r.IdleExpiresAt
+		}
+		fillString(&d.Type, r.DeviceType)
+		fillString(&d.Model, r.DeviceModel)
+		fillString(&d.OS, r.DeviceOS)
+		fillString(&d.Browser, r.DeviceBrowser)
+		fillString(&d.IP, r.IP)
+	}
+	return out
+}
+
+func deviceKeyOf(r domain.Session) string {
+	if id := derefString(r.DeviceID); id != "" {
+		return id
+	}
+	return UnknownDeviceID
+}
+
+func derefString(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
+func fillString(dst *string, src *string) {
+	if *dst == "" && src != nil {
+		*dst = *src
+	}
+}
+
+func uniqueIDs(ids []int64) []int64 {
+	seen := make(map[int64]bool, len(ids))
+	out := make([]int64, 0, len(ids))
+	for _, id := range ids {
+		if id == 0 || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 // DeleteExpired 清理已过期或已吊销超过 30 天的会话，返回删除行数。

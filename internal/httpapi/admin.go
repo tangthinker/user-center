@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/tangthinker/user-center/v2/internal/app"
@@ -344,6 +345,8 @@ type adminUser struct {
 	IsAdmin     bool   `json:"is_admin"`
 	CreatedAt   string `json:"created_at"`
 	LastLoginAt string `json:"last_login_at"`
+	// OnlineDevices 是该用户当前在线设备数（按设备指纹归并，不是会话数）。
+	OnlineDevices int `json:"online_devices"`
 }
 
 func toAdminUser(u domain.User) adminUser {
@@ -353,10 +356,10 @@ func toAdminUser(u domain.User) adminUser {
 		UID:       u.UIDValue(),
 		Status:    u.Status,
 		IsAdmin:   u.IsAdmin,
-		CreatedAt: u.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		CreatedAt: utcStamp(u.CreatedAt),
 	}
 	if u.LastLoginAt != nil {
-		out.LastLoginAt = u.LastLoginAt.UTC().Format("2006-01-02T15:04:05Z")
+		out.LastLoginAt = utcStamp(*u.LastLoginAt)
 	}
 	return out
 }
@@ -385,9 +388,22 @@ func (a *Admin) handleListUsers(c *fiber.Ctx) error {
 	if err != nil {
 		return fail(c, err, a.cfg.OnError)
 	}
+
+	// 在线设备数一次分组查询取回，避免逐行查询（用户列表最多 500 行）。
+	ids := make([]int64, 0, len(users))
+	for _, u := range users {
+		ids = append(ids, u.ID)
+	}
+	counts, err := a.app.AdminOnlineDeviceCounts(c.UserContext(), ids)
+	if err != nil {
+		return fail(c, err, a.cfg.OnError)
+	}
+
 	out := make([]adminUser, 0, len(users))
 	for _, u := range users {
-		out = append(out, toAdminUser(u))
+		item := toAdminUser(u)
+		item.OnlineDevices = counts[u.ID]
+		out = append(out, item)
 	}
 	return ok(c, fiber.Map{"users": out, "limit": limit, "offset": offset})
 }
@@ -482,25 +498,35 @@ func (a *Admin) handleRevokeSessions(c *fiber.Ctx) error {
 	return ok(c, fiber.Map{"revoked": n})
 }
 
+// handleListSessions 返回某用户的**在线设备**。
+//
+// 一个"设备"= 同一 (scope, 设备指纹) 下的全部在线的会话：验证码登录每次都会
+// 签发新会话且不吊销旧的，直接列会话会把"一台手机"显示成"十台设备"（§5.4）。
 func (a *Admin) handleListSessions(c *fiber.Ctx) error {
 	id, err := pathID(c)
 	if err != nil {
 		return failStatus(c, http.StatusBadRequest, "无效的用户 ID")
 	}
-	sessions, err := a.app.AdminListSessions(c.UserContext(), a.actor(c), id)
+	devices, err := a.app.AdminListSessions(c.UserContext(), a.actor(c), id)
 	if err != nil {
 		return fail(c, err, a.cfg.OnError)
 	}
-	out := make([]fiber.Map, 0, len(sessions))
-	for _, s := range sessions {
+	out := make([]fiber.Map, 0, len(devices))
+	for _, d := range devices {
 		out = append(out, fiber.Map{
-			"scope":      s.Scope,
-			"issued_at":  s.IssuedAt.UTC().Format("2006-01-02T15:04:05Z"),
-			"last_seen":  s.LastSeenAt.UTC().Format("2006-01-02T15:04:05Z"),
-			"expires_at": s.IdleExpiresAt.UTC().Format("2006-01-02T15:04:05Z"),
+			"scope":          d.Scope,
+			"type":           d.Type,
+			"model":          d.Model,
+			"os":             d.OS,
+			"browser":        d.Browser,
+			"ip":             d.IP,
+			"sessions":       d.Sessions,
+			"login_at":       utcStamp(d.LoginAt),
+			"first_login_at": utcStamp(d.FirstLoginAt),
+			"last_seen":      utcStamp(d.LastSeenAt),
 		})
 	}
-	return ok(c, fiber.Map{"sessions": out})
+	return ok(c, fiber.Map{"devices": out})
 }
 
 func (a *Admin) handleDeleteUser(c *fiber.Ctx) error {
@@ -523,7 +549,7 @@ func (a *Admin) handleAudit(c *fiber.Ctx) error {
 	out := make([]fiber.Map, 0, len(entries))
 	for _, e := range entries {
 		item := fiber.Map{
-			"created_at":  e.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			"created_at":  utcStamp(e.CreatedAt),
 			"actor_email": e.ActorEmail,
 			"action":      e.Action,
 		}
@@ -538,6 +564,12 @@ func (a *Admin) handleAudit(c *fiber.Ctx) error {
 	}
 	return ok(c, fiber.Map{"entries": out, "limit": limit, "offset": offset})
 }
+
+// utcStamp 是接口里所有时间字段的唯一格式：RFC 3339 / UTC。
+//
+// 一律返回 UTC 让调用方（浏览器）按**客户端自己的**时区显示；早先这里写过
+// 本地墙上时间，管理界面上就会凭空少 8 小时（见 CreateUserResult.ExpiresAt 的注释）。
+func utcStamp(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05Z") }
 
 func pathID(c *fiber.Ctx) (int64, error) {
 	return strconv.ParseInt(c.Params("id"), 10, 64)

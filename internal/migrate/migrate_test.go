@@ -70,18 +70,101 @@ func TestRunRecordsLatestVersion(t *testing.T) {
 // 幂等且可重入：重复执行不得报错、不得重复记录版本
 func TestRunIsIdempotent(t *testing.T) {
 	db := migratedDB(t)
+
+	var before int
+	if err := db.Raw(`SELECT COUNT(*) FROM schema_migrations`).Row().Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	if before == 0 {
+		t.Fatal("首次迁移没有记录任何版本")
+	}
+
 	for i := 0; i < 3; i++ {
 		if err := migrate.Run(context.Background(), db); err != nil {
 			t.Fatalf("run #%d: %v", i+2, err)
 		}
 	}
 
-	var rows int
-	if err := db.Raw(`SELECT COUNT(*) FROM schema_migrations`).Row().Scan(&rows); err != nil {
+	// 断言"版本行数没变 + 无重复版本"，而不是断言行数等于某个具体数字：
+	// 原先写成 len([]int{migrate.LatestVersion()})（恒为 1），在只有 1 个迁移时
+	// 侥幸通过，追加第 2 个迁移后就会报"rows = 2, want 2"这种自相矛盾的失败。
+	var rows, distinct int
+	if err := db.Raw(`SELECT COUNT(*), COUNT(DISTINCT version) FROM schema_migrations`).
+		Row().Scan(&rows, &distinct); err != nil {
 		t.Fatal(err)
 	}
-	if rows != len([]int{migrate.LatestVersion()}) {
-		t.Fatalf("schema_migrations rows = %d, want %d", rows, migrate.LatestVersion())
+	if rows != before {
+		t.Fatalf("重复执行后 schema_migrations 行数 = %d, want %d", rows, before)
+	}
+	if rows != distinct {
+		t.Fatalf("schema_migrations 出现重复版本：rows=%d distinct=%d", rows, distinct)
+	}
+}
+
+// 迁移纪律（§12.2）：只做加法，且**旧数据必须原样保留**。
+//
+// 这里手工搭一个"已经跑到 v1"的库（含一条历史会话），再执行迁移，
+// 验证 ALTER TABLE 不会丢数据、旧会话的设备字段为空但不影响读取。
+func TestUpgradeKeepsExistingSessions(t *testing.T) {
+	db := rawDB(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	if err := db.Exec(`CREATE TABLE schema_migrations (
+		version    INTEGER PRIMARY KEY,
+		name       TEXT NOT NULL,
+		applied_at DATETIME NOT NULL
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`INSERT INTO schema_migrations (version, name, applied_at) VALUES (1, 'init', ?)`,
+		now).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(`CREATE TABLE sessions (
+		token_hash          BLOB PRIMARY KEY,
+		user_id             INTEGER NOT NULL,
+		uid                 TEXT    NOT NULL,
+		scope               TEXT    NOT NULL,
+		issued_at           DATETIME NOT NULL,
+		idle_expires_at     DATETIME NOT NULL,
+		absolute_expires_at DATETIME NOT NULL,
+		last_seen_at        DATETIME NOT NULL,
+		ip                  TEXT    NULL,
+		ua_hash             TEXT    NULL,
+		revoked_at          DATETIME NULL,
+		revoke_reason       TEXT    NULL
+	)`).Error; err != nil {
+		t.Fatal(err)
+	}
+	// token_hash 用 SQL 字面量写入：GORM 会把 []byte 参数当成切片展开成多个占位符。
+	if err := db.Exec(`INSERT INTO sessions
+		(token_hash, user_id, uid, scope, issued_at, idle_expires_at, absolute_expires_at, last_seen_at, ip)
+		VALUES (X'010203', 1, 'alice', 'user', ?, ?, ?, ?, '203.0.113.7')`,
+		now, now.Add(time.Hour), now.Add(24*time.Hour), now).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	if err := migrate.Run(ctx, db); err != nil {
+		t.Fatalf("migrate.Run: %v", err)
+	}
+	if got := migrate.LatestVersion(); got < 2 {
+		t.Fatalf("LatestVersion = %d, 期望至少 2（本测试需要 v2 的会话设备列）", got)
+	}
+
+	var (
+		uid      string
+		ip       string
+		deviceID *string
+	)
+	if err := db.Raw(`SELECT uid, ip, device_id FROM sessions`).Row().Scan(&uid, &ip, &deviceID); err != nil {
+		t.Fatalf("升级后读不回历史会话：%v", err)
+	}
+	if uid != "alice" || ip != "203.0.113.7" {
+		t.Fatalf("升级改动了历史数据：uid=%q ip=%q", uid, ip)
+	}
+	if deviceID != nil {
+		t.Fatalf("历史会话的 device_id 应为 NULL（未知设备），得到 %q", *deviceID)
 	}
 }
 

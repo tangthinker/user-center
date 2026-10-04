@@ -110,6 +110,10 @@ type OTPCode struct {
 func (OTPCode) TableName() string { return "otp_codes" }
 
 // Session 是服务端会话。只存 sha256(token)。
+//
+// 设备信息（device_*）在签发时从 UA 解析后落库（**原始 UA 永不落库**，只留
+// ua_hash）：device_id 是不含版本号的设备指纹的加盐哈希，用于把"同一个客户端
+// 反复登录"归并成一台设备；其余四列是给人看的展示字段。
 type Session struct {
 	TokenHash         []byte     `gorm:"column:token_hash;primaryKey"`
 	UserID            int64      `gorm:"column:user_id"`
@@ -121,6 +125,11 @@ type Session struct {
 	LastSeenAt        time.Time  `gorm:"column:last_seen_at"`
 	IP                *string    `gorm:"column:ip"`
 	UAHash            *string    `gorm:"column:ua_hash"`
+	DeviceID          *string    `gorm:"column:device_id"`
+	DeviceType        *string    `gorm:"column:device_type"`
+	DeviceModel       *string    `gorm:"column:device_model"`
+	DeviceOS          *string    `gorm:"column:device_os"`
+	DeviceBrowser     *string    `gorm:"column:device_browser"`
 	RevokedAt         *time.Time `gorm:"column:revoked_at"`
 	RevokeReason      *string    `gorm:"column:revoke_reason"`
 }

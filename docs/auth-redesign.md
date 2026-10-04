@@ -259,13 +259,14 @@ file:user-center.db?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL&_fo
 | POST | `/admin/otp/send` | 仅允许管理员邮箱 |
 | POST | `/admin/otp/verify` | 换 admin 会话 |
 | POST | `/admin/logout` | 吊销当前 admin 会话 |
-| GET | `/admin/users` | 列表（含 status、是否待激活、last_login_at） |
+| GET | `/admin/users` | 列表（含 status、是否待激活、last_login_at、`online_devices` 在线设备数） |
 | POST | `/admin/users` | `{email}` → 建用户（`invited`）+ 发邀请 |
 | POST | `/admin/users/:id/invite/resend` | 重发（作废旧 token） |
 | POST | `/admin/users/:id/invite/link` | **重新生成并返回明文链接一次**（供复制） |
 | POST | `/admin/users/:id/disable` / `enable` | 停用/启用 |
 | POST | `/admin/users/:id/email` | 改邮箱（通知旧地址 + 吊销全会话） |
 | POST | `/admin/users/:id/sessions/revoke` | 踢掉该用户全部会话 |
+| GET | `/admin/users/:id/sessions` | 该用户的**在线设备**（按设备指纹归并：类型/型号/系统/浏览器/登入时间/最近活跃/IP） |
 | DELETE | `/admin/users/:id` | 删除用户 |
 | GET | `/admin/audit` | 审计查询 |
 
@@ -360,7 +361,12 @@ CREATE TABLE sessions (
   absolute_expires_at TIMESTAMP NOT NULL,
   last_seen_at        TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
   ip                  TEXT NULL,
-  ua_hash             TEXT NULL,
+  ua_hash             TEXT NULL,                     -- sha256(salt+UA)[:8]，原始 UA 永不落库
+  device_id           TEXT NULL,                     -- 设备指纹的加盐哈希（见 §5.4）
+  device_type         TEXT NULL,                     -- desktop | mobile | tablet | bot | unknown
+  device_model        TEXT NULL,                     -- iPhone / Pixel 7 / SM-G991B / Mac …
+  device_os           TEXT NULL,                     -- iOS 17.5 / Android 14 / Windows 10/11 …
+  device_browser      TEXT NULL,                     -- Safari 17.5 / Chrome 126 …
   revoked_at          TIMESTAMP NULL,
   revoke_reason       TEXT NULL
 );
@@ -595,6 +601,18 @@ WHERE user_id=? AND revoked_at IS NULL;
 > 阈值会恒为 0 ⇒ 管理会话永不续期、30 分钟必定掉线。两种情况都已在实现中修正并加了回归测试。
 
 **不做 IP/UA 硬绑定**：移动网络下 IP 频繁变化会误伤；`ip` 与 `ua_hash` 仅用于审计，UA 突变时可作为风险信号记录（本期不阻断）。
+
+**设备指纹（`device_*` 列）**：管理界面要回答"这个用户有几台在线设备、分别是什么"，因此签发会话时把 UA
+解析成结构化字段落库（`internal/device`），**原始 UA 仍然不落库**。三条约束：
+
+| 约束 | 原因 |
+|---|---|
+| `device_id` 是**加盐哈希**，不是指纹原像 | 磁盘上不该出现可跨库比对的设备标识（与 `ua_hash` 用不同的域前缀，两类摘要不通用） |
+| 指纹**不含版本号**（`type\|model\|os族\|browser族`） | 否则浏览器/系统升级一次就凭空多出一台设备 |
+| 在线设备 = `scope + 设备指纹` 聚合，且必须**排除 idle 已过期**的会话 | 验证码登录每次都签发新会话且不吊销旧的，直接数会话会把"一台手机"显示成"十台设备"；只判 `revoked_at IS NULL` 也不够——会话是按需清理的，库里躺着早就闲置过期的行 |
+
+识别不出来的 UA（空 UA、脚本客户端、Chromium 的 `Android 10; K` 削减方案）**不编造型号**：
+`device_id` 记 NULL、型号退化为平台名，与旧数据同归"未知设备"一类。
 
 ### 5.5 管理员改邮箱（admin-only）
 
